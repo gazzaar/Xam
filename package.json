@@ -1,7 +1,7 @@
 {
   "name": "testnova-back",
   "version": "1.0.0",
-  "description": "",
+  "description": "Online Exam System",
   "main": "index.js",
   "scripts": {
     "start": "node src/server.js",
@@ -11,7 +11,7 @@
     "format": "prettier --write ."
   },
   "keywords": [],
-  "author": "",
+  "author": "gazzaar",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
