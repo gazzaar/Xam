@@ -9,7 +9,7 @@ lerna-debug.log*
 .env
 .env.development
 .env.production
-
+progress.md
 node_modules
 dist
 dist-ssr
