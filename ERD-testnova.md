@@ -1,7 +1,3 @@
-For your graduation project, an Online Exam System Platform, I’ll provide both the Entity-Relationship Diagram (ERD) and the API documentation based on the Product Requirements Document (PRD). Since I can’t generate visual diagrams, I’ll describe the ERD in detail with entities, attributes, and relationships. For the API documentation, I’ll outline the key endpoints, methods, and expected request/response formats.
-
----
-
 ## Entity-Relationship Diagram (ERD)
 
 The ERD represents the data model for the Online Exam System, detailing how data is structured and related. Below is a textual representation of the ERD, including entities, attributes, and relationships.
