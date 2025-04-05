@@ -60,6 +60,70 @@ const authController = {
       });
     }
   },
+
+  registerInstructor: async (req, res) => {
+    const { username, password, email, firstName, lastName, department } =
+      req.body;
+
+    try {
+      // Start transaction
+      await client.query('BEGIN');
+
+      // Check if username or email already exists
+      const checkUser = await client.query(
+        'SELECT username, email FROM users WHERE username = $1 OR email = $2',
+        [username, email]
+      );
+
+      if (checkUser.rows.length > 0) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          success: false,
+          message: 'Username or email already exists',
+        });
+      }
+
+      // Insert into users table
+      const userResult = await client.query(
+        `INSERT INTO users
+         (username, password, email, first_name, last_name, role, is_approved)
+         VALUES ($1, $2, $3, $4, $5, 'instructor', false)
+         RETURNING user_id`,
+        [username, password, email, firstName, lastName]
+      );
+
+      const userId = userResult.rows[0].user_id;
+
+      // Insert into instructors table
+      await client.query(
+        'INSERT INTO instructors (instructor_id, department) VALUES ($1, $2)',
+        [userId, department]
+      );
+
+      // Commit transaction
+      await client.query('COMMIT');
+
+      res.status(201).json({
+        success: true,
+        message: 'Registration successful. Waiting for admin approval.',
+        data: {
+          username,
+          email,
+          firstName,
+          lastName,
+          department,
+        },
+      });
+    } catch (error) {
+      await client.query('ROLLBACK');
+      console.error('Registration error:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error during registration',
+        error: error.message,
+      });
+    }
+  },
 };
 
 module.exports = authController;
