@@ -71,6 +71,8 @@ CREATE TABLE IF NOT EXISTS allowed_students (
   allowed_id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
   exam_id INTEGER REFERENCES exams(exam_id),
   uni_id VARCHAR(255) NOT NULL,
+  student_name VARCHAR(255),
+  student_email VARCHAR(255),
   UNIQUE(exam_id, uni_id)
 );
 
