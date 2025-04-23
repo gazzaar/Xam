@@ -453,6 +453,77 @@ const instructorController = {
       });
     }
   },
+
+  // Get instructor dashboard statistics
+  getDashboardStats: async (req, res) => {
+    const instructor_id = req.user.user_id;
+
+    try {
+      const stats = await Promise.all([
+        // Count total exams
+        client.query(
+          `
+          SELECT COUNT(*) as total_exams
+          FROM exams
+          WHERE instructor_id = $1
+        `,
+          [instructor_id]
+        ),
+
+        // Count active exams
+        client.query(
+          `
+          SELECT COUNT(*) as active_exams
+          FROM exams
+          WHERE instructor_id = $1
+          AND is_active = true
+          AND end_date > NOW()
+        `,
+          [instructor_id]
+        ),
+
+        // Count completed exams
+        client.query(
+          `
+          SELECT COUNT(*) as completed_exams
+          FROM exams
+          WHERE instructor_id = $1
+          AND end_date < NOW()
+        `,
+          [instructor_id]
+        ),
+
+        // Count pending exams (active but not started)
+        client.query(
+          `
+          SELECT COUNT(*) as pending_exams
+          FROM exams
+          WHERE instructor_id = $1
+          AND is_active = true
+          AND start_date > NOW()
+        `,
+          [instructor_id]
+        ),
+      ]);
+
+      res.status(200).json({
+        success: true,
+        data: {
+          totalExams: parseInt(stats[0].rows[0].total_exams),
+          activeExams: parseInt(stats[1].rows[0].active_exams),
+          completedExams: parseInt(stats[2].rows[0].completed_exams),
+          pendingExams: parseInt(stats[3].rows[0].pending_exams),
+        },
+      });
+    } catch (error) {
+      console.error('Error fetching dashboard stats:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error fetching dashboard statistics',
+        error: error.message,
+      });
+    }
+  },
 };
 
 // Helper function to generate unique access code

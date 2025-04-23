@@ -167,27 +167,44 @@ const adminController = {
       const stats = await Promise.all([
         // Count total instructors
         client.query(`
-                    SELECT COUNT(*) as total_instructors
-                    FROM users
-                    WHERE role = 'instructor'
-                `),
+          SELECT COUNT(*) as total_instructors
+          FROM users
+          WHERE role = 'instructor'
+        `),
 
         // Count pending instructors
         client.query(`
-                    SELECT COUNT(*) as pending_instructors
-                    FROM users
-                    WHERE role = 'instructor' AND is_approved = false
-                `),
+          SELECT COUNT(*) as pending_instructors
+          FROM users
+          WHERE role = 'instructor' AND is_approved = false
+        `),
 
         // Count total exams
-        client.query('SELECT COUNT(*) as total_exams FROM exams'),
+        client.query(`
+          SELECT COUNT(*) as total_exams
+          FROM exams
+        `),
 
         // Count active exams
         client.query(`
-                    SELECT COUNT(*) as active_exams
-                    FROM exams
-                    WHERE is_active = true AND end_date > NOW()
-                `),
+          SELECT COUNT(*) as active_exams
+          FROM exams
+          WHERE is_active = true AND end_date > NOW()
+        `),
+
+        // Count completed exams
+        client.query(`
+          SELECT COUNT(*) as completed_exams
+          FROM exams
+          WHERE end_date < NOW()
+        `),
+
+        // Count pending exams (active but not started)
+        client.query(`
+          SELECT COUNT(*) as pending_exams
+          FROM exams
+          WHERE is_active = true AND start_date > NOW()
+        `),
       ]);
 
       res.status(200).json({
@@ -197,6 +214,8 @@ const adminController = {
           pendingInstructors: parseInt(stats[1].rows[0].pending_instructors),
           totalExams: parseInt(stats[2].rows[0].total_exams),
           activeExams: parseInt(stats[3].rows[0].active_exams),
+          completedExams: parseInt(stats[4].rows[0].completed_exams),
+          pendingExams: parseInt(stats[5].rows[0].pending_exams),
         },
       });
     } catch (error) {
