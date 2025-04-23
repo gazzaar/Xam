@@ -22,6 +22,9 @@ const isApprovedInstructor = (req, res, next) => {
 // Apply authentication and instructor check middleware to all routes
 router.use(authMiddleware, isApprovedInstructor);
 
+// Dashboard statistics
+router.get('/dashboard', instructorController.getDashboardStats);
+
 // Exam management routes
 router.post('/exams', instructorController.createExam);
 router.get('/exams', instructorController.getExams);
