@@ -9,11 +9,8 @@ const SQL = `
 -- Create role ENUM type
 CREATE TYPE user_role AS ENUM ('instructor', 'admin');
 
--- Create question_type ENUM
-CREATE TYPE question_type AS ENUM ('multiple-choice', 'true/false', 'short-answer', 'essay');
-
--- Create question_category ENUM
-CREATE TYPE question_category AS ENUM ('mental_ability', 'psychological', 'technical', 'general_knowledge', 'other');
+-- Create question_type ENUM - simplified to just the types you mentioned
+CREATE TYPE question_type AS ENUM ('multiple-choice', 'true/false');
 
 -- Create users table
 CREATE TABLE IF NOT EXISTS users (
@@ -24,59 +21,50 @@ CREATE TABLE IF NOT EXISTS users (
   is_approved BOOLEAN DEFAULT false,
   email VARCHAR(255) NOT NULL UNIQUE,
   first_name VARCHAR(255) NOT NULL,
-  last_name VARCHAR(255) NOT NULL
-);
-
--- Create instructors table
-CREATE TABLE IF NOT EXISTS instructors (
-  instructor_id INTEGER PRIMARY KEY REFERENCES users(user_id),
-  department VARCHAR(255)
-);
-
--- Create admins table
-CREATE TABLE IF NOT EXISTS admins (
-  admin_id INTEGER PRIMARY KEY REFERENCES users(user_id)
-);
-
--- Create question_bank table
-CREATE TABLE IF NOT EXISTS question_bank (
-  question_bank_id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
-  question_type question_type NOT NULL,
-  question_text TEXT NOT NULL,
-  category question_category NOT NULL,
-  reference VARCHAR(50),
-  image_url VARCHAR(255),
-  timer INTEGER,
-  score INTEGER NOT NULL,
-  instructor_id INTEGER REFERENCES instructors(instructor_id),
+  last_name VARCHAR(255) NOT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Create question_bank_options table
-CREATE TABLE IF NOT EXISTS question_bank_options (
+-- Create courses table
+CREATE TABLE IF NOT EXISTS courses (
+  course_id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+  course_name VARCHAR(255) NOT NULL,
+  course_code VARCHAR(50) NOT NULL UNIQUE,
+  description TEXT
+);
+
+-- Create questions table
+CREATE TABLE IF NOT EXISTS questions (
+  question_id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+  question_text TEXT NOT NULL,
+  question_type question_type NOT NULL,
+  points INTEGER NOT NULL,
+  image_url VARCHAR(255),
+  chapter VARCHAR(50),
+  course_id INTEGER REFERENCES courses(course_id),
+  instructor_id INTEGER REFERENCES users(user_id),
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Create question_tags table
+CREATE TABLE IF NOT EXISTS question_tags (
+  tag_id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+  tag_name VARCHAR(100) NOT NULL UNIQUE
+);
+
+-- Create question_tag_mapping for many-to-many relationship
+CREATE TABLE IF NOT EXISTS question_tag_mapping (
+  question_id INTEGER REFERENCES questions(question_id),
+  tag_id INTEGER REFERENCES question_tags(tag_id),
+  PRIMARY KEY (question_id, tag_id)
+);
+
+-- Create question_options table
+CREATE TABLE IF NOT EXISTS question_options (
   option_id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
-  question_bank_id INTEGER REFERENCES question_bank(question_bank_id),
+  question_id INTEGER REFERENCES questions(question_id) ON DELETE CASCADE,
   option_text VARCHAR(255) NOT NULL,
   is_correct BOOLEAN NOT NULL
-);
-
--- Create exam_models table
-CREATE TABLE IF NOT EXISTS exam_models (
-  model_id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
-  model_name VARCHAR(255) NOT NULL,
-  description TEXT,
-  instructor_id INTEGER REFERENCES instructors(instructor_id),
-  total_questions INTEGER NOT NULL,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Create exam_model_questions table
-CREATE TABLE IF NOT EXISTS exam_model_questions (
-  model_question_id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
-  model_id INTEGER REFERENCES exam_models(model_id),
-  category question_category,
-  num_questions INTEGER NOT NULL,
-  CONSTRAINT check_num_questions CHECK (num_questions > 0)
 );
 
 -- Create exams table
@@ -84,172 +72,167 @@ CREATE TABLE IF NOT EXISTS exams (
   exam_id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
   exam_name VARCHAR(255) NOT NULL,
   description TEXT,
+  time_limit_minutes INTEGER NOT NULL,
   start_date TIMESTAMP NOT NULL,
   end_date TIMESTAMP NOT NULL,
-  duration INTEGER NOT NULL,
-  instructor_id INTEGER REFERENCES instructors(instructor_id),
-  model_id INTEGER REFERENCES exam_models(model_id),
+  instructor_id INTEGER REFERENCES users(user_id),
+  course_id INTEGER REFERENCES courses(course_id),
   access_code VARCHAR(10) UNIQUE,
-  is_active BOOLEAN DEFAULT true
+  is_active BOOLEAN DEFAULT true,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Create exam_questions table
-CREATE TABLE IF NOT EXISTS exam_questions (
-  exam_question_id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
-  exam_id INTEGER REFERENCES exams(exam_id),
-  question_bank_id INTEGER REFERENCES question_bank(question_bank_id),
-  order_num INTEGER NOT NULL,
-  UNIQUE(exam_id, question_bank_id, order_num)
+-- Create exam_specifications table
+CREATE TABLE IF NOT EXISTS exam_specifications (
+  spec_id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+  exam_id INTEGER REFERENCES exams(exam_id) ON DELETE CASCADE,
+  tag_id INTEGER REFERENCES question_tags(tag_id),
+  chapter VARCHAR(50),
+  num_questions INTEGER NOT NULL,
+  points_per_question INTEGER,
+  CONSTRAINT check_num_questions CHECK (num_questions > 0)
 );
 
 -- Create allowed_students table
 CREATE TABLE IF NOT EXISTS allowed_students (
   allowed_id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
-  exam_id INTEGER REFERENCES exams(exam_id),
+  exam_id INTEGER REFERENCES exams(exam_id) ON DELETE CASCADE,
   uni_id VARCHAR(255) NOT NULL,
-  student_name VARCHAR(255),
-  student_email VARCHAR(255),
+  student_name VARCHAR(255) NOT NULL,
   UNIQUE(exam_id, uni_id)
 );
 
--- Create exam_attempts table
-CREATE TABLE IF NOT EXISTS exam_attempts (
-  attempt_id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
-  exam_id INTEGER REFERENCES exams(exam_id),
+-- Create student_exams table to track dynamically generated exams
+CREATE TABLE IF NOT EXISTS student_exams (
+  student_exam_id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+  exam_id INTEGER REFERENCES exams(exam_id) ON DELETE CASCADE,
   uni_id VARCHAR(255) NOT NULL,
-  start_time TIMESTAMP NOT NULL,
+  student_name VARCHAR(255) NOT NULL,
+  start_time TIMESTAMP,
   end_time TIMESTAMP,
-  score INTEGER,
-  status VARCHAR(20) DEFAULT 'in_progress'
+  score NUMERIC(5,2),
+  status VARCHAR(20) DEFAULT 'not_started',
+  UNIQUE(exam_id, uni_id)
 );
 
--- Create answers table
-CREATE TABLE IF NOT EXISTS answers (
-  answer_id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
-  attempt_id INTEGER REFERENCES exam_attempts(attempt_id),
-  exam_question_id INTEGER REFERENCES exam_questions(exam_question_id),
-  answer_text TEXT NOT NULL,
+-- Create student_exam_questions table to store which questions were given to each student
+CREATE TABLE IF NOT EXISTS student_exam_questions (
+  student_question_id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+  student_exam_id INTEGER REFERENCES student_exams(student_exam_id) ON DELETE CASCADE,
+  question_id INTEGER REFERENCES questions(question_id),
+  question_order INTEGER NOT NULL,
+  student_answer TEXT,
   is_correct BOOLEAN,
-  score INTEGER
+  UNIQUE(student_exam_id, question_order)
 );
 
--- Function to assign questions to an exam based on its model
-CREATE OR REPLACE FUNCTION assign_questions_to_exam(p_exam_id INTEGER) RETURNS VOID AS $$
+-- Function to dynamically generate an exam for a student
+CREATE OR REPLACE FUNCTION generate_student_exam(p_exam_id INTEGER, p_uni_id VARCHAR(255), p_student_name VARCHAR(255))
+RETURNS INTEGER AS $$
 DECLARE
-  v_model_id INTEGER;
-  v_category question_category;
-  v_num_questions INTEGER;
-  v_order_num INTEGER := 1;
+  v_student_exam_id INTEGER;
+  v_spec RECORD;
+  v_question_count INTEGER := 1;
 BEGIN
-  -- Get the model_id for the exam
-  SELECT model_id INTO v_model_id
-  FROM exams
-  WHERE exam_id = p_exam_id;
+  -- Create a new student exam record
+  INSERT INTO student_exams (exam_id, uni_id, student_name, status)
+  VALUES (p_exam_id, p_uni_id, p_student_name, 'not_started')
+  RETURNING student_exam_id INTO v_student_exam_id;
 
-  -- Loop through each category and number of questions in the model
-  FOR v_category, v_num_questions IN
-    SELECT category, num_questions
-    FROM exam_model_questions
-    WHERE model_id = v_model_id
+  -- Process each specification for the exam
+  FOR v_spec IN
+    SELECT * FROM exam_specifications WHERE exam_id = p_exam_id
   LOOP
-    -- Insert random questions from question_bank for the category
-    INSERT INTO exam_questions (exam_id, question_bank_id, order_num)
-    SELECT p_exam_id, question_bank_id, v_order_num + ROW_NUMBER() OVER (ORDER BY RANDOM()) - 1
-    FROM question_bank
-    WHERE category = v_category
-    ORDER BY RANDOM()
-    LIMIT v_num_questions;
+    -- Query to get questions matching the specification
+    WITH eligible_questions AS (
+      SELECT q.question_id
+      FROM questions q
+      LEFT JOIN question_tag_mapping qtm ON q.question_id = qtm.question_id
+      LEFT JOIN question_tags t ON qtm.tag_id = t.tag_id
+      WHERE
+        (v_spec.tag_id IS NULL OR qtm.tag_id = v_spec.tag_id) AND
+        (v_spec.chapter IS NULL OR q.chapter = v_spec.chapter) AND
+        q.course_id = (SELECT course_id FROM exams WHERE exam_id = p_exam_id)
+    )
+    -- Insert selected questions into student_exam_questions
+    INSERT INTO student_exam_questions (student_exam_id, question_id, question_order)
+    SELECT
+      v_student_exam_id,
+      question_id,
+      v_question_count + row_number() OVER (ORDER BY random()) - 1
+    FROM eligible_questions
+    ORDER BY random()
+    LIMIT v_spec.num_questions;
 
-    -- Update the order_num for the next batch
-    v_order_num := v_order_num + v_num_questions;
+    -- Update question count for next specification
+    v_question_count := v_question_count + v_spec.num_questions;
   END LOOP;
+
+  RETURN v_student_exam_id;
 END;
 $$ LANGUAGE plpgsql;
 
--- Trigger to assign questions when an exam is created
-CREATE OR REPLACE FUNCTION trigger_assign_questions() RETURNS TRIGGER AS $$
+-- Function to grade a student's exam
+CREATE OR REPLACE FUNCTION grade_student_exam(p_student_exam_id INTEGER) RETURNS NUMERIC AS $$
+DECLARE
+  v_total_score NUMERIC(5,2) := 0;
+  v_total_possible NUMERIC(5,2) := 0;
+  v_question RECORD;
 BEGIN
-  PERFORM assign_questions_to_exam(NEW.exam_id);
-  RETURN NEW;
+  -- Update each question's correctness
+  FOR v_question IN
+    SELECT seq.student_question_id, seq.student_answer, q.question_id, q.points, q.question_type
+    FROM student_exam_questions seq
+    JOIN questions q ON seq.question_id = q.question_id
+    WHERE seq.student_exam_id = p_student_exam_id
+  LOOP
+    -- For multiple choice and true/false questions
+    IF v_question.question_type IN ('multiple-choice', 'true/false') THEN
+      UPDATE student_exam_questions
+      SET is_correct = (
+        SELECT CASE
+          WHEN qo.is_correct AND qo.option_id::text = v_question.student_answer THEN TRUE
+          ELSE FALSE
+        END
+        FROM question_options qo
+        WHERE qo.question_id = v_question.question_id
+        AND qo.option_id::text = v_question.student_answer
+      )
+      WHERE student_question_id = v_question.student_question_id;
+    END IF;
+
+    -- Add to total possible points
+    v_total_possible := v_total_possible + v_question.points;
+
+    -- Add to score if correct
+    IF EXISTS (
+      SELECT 1 FROM student_exam_questions
+      WHERE student_question_id = v_question.student_question_id AND is_correct = TRUE
+    ) THEN
+      v_total_score := v_total_score + v_question.points;
+    END IF;
+  END LOOP;
+
+  -- Calculate percentage score
+  DECLARE v_percentage NUMERIC(5,2);
+  BEGIN
+    IF v_total_possible > 0 THEN
+      v_percentage := (v_total_score / v_total_possible) * 100;
+    ELSE
+      v_percentage := 0;
+    END IF;
+
+    -- Update the student_exams table with the final score
+    UPDATE student_exams
+    SET score = v_percentage,
+        status = 'completed',
+        end_time = CURRENT_TIMESTAMP
+    WHERE student_exam_id = p_student_exam_id;
+
+    RETURN v_percentage;
+  END;
 END;
 $$ LANGUAGE plpgsql;
-
-CREATE TRIGGER exam_questions_trigger
-AFTER INSERT ON exams
-FOR EACH ROW
-EXECUTE FUNCTION trigger_assign_questions();
-
--- Insert sample admin user
-INSERT INTO users (username, password, role, is_approved, email, first_name, last_name)
-VALUES
-  ('admin1', 'admin123', 'admin', true, 'admin@xam.edu', 'Admin', 'User')
-RETURNING user_id;
-
-INSERT INTO admins (admin_id)
-SELECT user_id FROM users WHERE username = 'admin1';
-
--- Insert sample approved instructor
-INSERT INTO users (username, password, role, is_approved, email, first_name, last_name)
-VALUES
-  ('instructor1', 'pass123', 'instructor', true, 'instructor1@xam.edu', 'John', 'Doe')
-RETURNING user_id;
-
-INSERT INTO instructors (instructor_id, department)
-SELECT user_id, 'Computer Science' FROM users WHERE username = 'instructor1';
-
--- Insert sample questions into question_bank
-INSERT INTO question_bank (question_type, question_text, category, reference, image_url, timer, score, instructor_id)
-VALUES
-  ('multiple-choice', 'What is the capital of France?', 'general_knowledge', 'ch1', NULL, 30, 10, (SELECT instructor_id FROM instructors WHERE instructor_id = (SELECT user_id FROM users WHERE username = 'instructor1'))),
-  ('true/false', 'The brain is the largest organ in the human body.', 'mental_ability', 'ch2', 'brain_image.jpg', 20, 5, (SELECT instructor_id FROM instructors WHERE instructor_id = (SELECT user_id FROM users WHERE username = 'instructor1'))),
-  ('short-answer', 'Describe the fight-or-flight response.', 'psychological', 'ch3', NULL, 60, 15, (SELECT instructor_id FROM instructors WHERE instructor_id = (SELECT user_id FROM users WHERE username = 'instructor1')));
-
--- Insert options for multiple-choice question
-INSERT INTO question_bank_options (question_bank_id, option_text, is_correct)
-SELECT question_bank_id, option_text, is_correct
-FROM (VALUES
-  ((SELECT question_bank_id FROM question_bank WHERE question_text = 'What is the capital of France?'), 'Paris', true),
-  ((SELECT question_bank_id FROM question_bank WHERE question_text = 'What is the capital of France?'), 'London', false),
-  ((SELECT question_bank_id FROM question_bank WHERE question_text = 'What is the capital of France?'), 'Berlin', false),
-  ((SELECT question_bank_id FROM question_bank WHERE question_text = 'What is the capital of France?'), 'Madrid', false)
-) AS options (question_bank_id, option_text, is_correct);
-
--- Insert sample exam model
-INSERT INTO exam_models (model_name, description, instructor_id, total_questions)
-VALUES
-  ('CS101 Final Model', 'Model for CS101 final exam with mixed categories',
-   (SELECT instructor_id FROM instructors WHERE instructor_id = (SELECT user_id FROM users WHERE username = 'instructor1')), 3);
-
--- Insert question selection criteria for exam model
-INSERT INTO exam_model_questions (model_id, category, num_questions)
-VALUES
-  ((SELECT model_id FROM exam_models WHERE model_name = 'CS101 Final Model'), 'general_knowledge', 1),
-  ((SELECT model_id FROM exam_models WHERE model_name = 'CS101 Final Model'), 'mental_ability', 1),
-  ((SELECT model_id FROM exam_models WHERE model_name = 'CS101 Final Model'), 'psychological', 1);
-
--- Insert sample exam (questions will be auto-assigned via trigger)
-INSERT INTO exams (exam_name, description, start_date, end_date, duration, instructor_id, model_id, access_code)
-SELECT
-  'Introduction to Programming Final',
-  'Final exam for CS101 course',
-  NOW(),
-  NOW() + INTERVAL '3 days',
-  120,
-  instructor_id,
-  (SELECT model_id FROM exam_models WHERE model_name = 'CS101 Final Model'),
-  'CS101FINAL'
-FROM instructors
-WHERE instructor_id = (SELECT user_id FROM users WHERE username = 'instructor1');
-
--- Insert sample allowed students
-INSERT INTO allowed_students (exam_id, uni_id, student_name, student_email)
-SELECT exam_id, uni_id, student_name, student_email
-FROM exams, (VALUES
-  ('STU001', 'John Doe', 'john.doe@university.edu'),
-  ('STU002', 'Jane Smith', 'jane.smith@university.edu'),
-  ('STU003', 'Alex Johnson', 'alex.j@university.edu')
-) AS students(uni_id, student_name, student_email)
-WHERE access_code = 'CS101FINAL';
 `;
 
 async function main() {
