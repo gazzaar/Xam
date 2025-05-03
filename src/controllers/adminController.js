@@ -17,12 +17,13 @@ const adminController = {
   getPendingInstructors: async (req, res) => {
     try {
       const query = `
-                SELECT u.user_id, u.username, u.email, u.first_name, u.last_name,
-                       i.department
-                FROM users u
-                JOIN instructors i ON u.user_id = i.instructor_id
-                WHERE u.role = 'instructor' AND u.is_approved = false
-            `;
+        SELECT u.user_id, u.username, u.email, u.first_name, u.last_name,
+               i.department, u.created_at
+        FROM users u
+        JOIN instructors i ON u.user_id = i.instructor_id
+        WHERE u.role = 'instructor' AND u.is_approved = false
+        ORDER BY u.created_at DESC
+      `;
 
       const result = await client.query(query);
 
@@ -50,11 +51,11 @@ const adminController = {
 
       // Update the user's approval status
       const updateQuery = `
-                UPDATE users
-                SET is_approved = true
-                WHERE user_id = $1 AND role = 'instructor'
-                RETURNING *
-            `;
+        UPDATE users
+        SET is_approved = true
+        WHERE user_id = $1 AND role = 'instructor'
+        RETURNING *
+      `;
 
       const result = await client.query(updateQuery, [instructorId]);
 
@@ -89,13 +90,15 @@ const adminController = {
   getAllInstructors: async (req, res) => {
     try {
       const query = `
-                SELECT u.user_id, u.username, u.email, u.first_name, u.last_name,
-                       u.is_approved, i.department
-                FROM users u
-                JOIN instructors i ON u.user_id = i.instructor_id
-                WHERE u.role = 'instructor'
-                ORDER BY u.is_approved DESC, u.username
-            `;
+        SELECT u.user_id, u.username, u.email, u.first_name, u.last_name,
+               u.is_approved, i.department, u.created_at,
+               (SELECT COUNT(*) FROM exams WHERE instructor_id = u.user_id) as total_exams,
+               (SELECT COUNT(*) FROM question_bank WHERE instructor_id = u.user_id) as total_questions
+        FROM users u
+        JOIN instructors i ON u.user_id = i.instructor_id
+        WHERE u.role = 'instructor'
+        ORDER BY u.is_approved DESC, u.username
+      `;
 
       const result = await client.query(query);
 
@@ -128,10 +131,10 @@ const adminController = {
 
       // Then, delete from users table
       const deleteQuery = `
-                DELETE FROM users
-                WHERE user_id = $1 AND role = 'instructor'
-                RETURNING *
-            `;
+        DELETE FROM users
+        WHERE user_id = $1 AND role = 'instructor'
+        RETURNING *
+      `;
 
       const result = await client.query(deleteQuery, [instructorId]);
 
@@ -205,6 +208,24 @@ const adminController = {
           FROM exams
           WHERE is_active = true AND start_date > NOW()
         `),
+
+        // Count total questions in question bank
+        client.query(`
+          SELECT COUNT(*) as total_questions
+          FROM question_bank
+        `),
+
+        // Count total exam models
+        client.query(`
+          SELECT COUNT(*) as total_models
+          FROM exam_models
+        `),
+
+        // Count total exam attempts
+        client.query(`
+          SELECT COUNT(*) as total_attempts
+          FROM exam_attempts
+        `),
       ]);
 
       res.status(200).json({
@@ -216,6 +237,9 @@ const adminController = {
           activeExams: parseInt(stats[3].rows[0].active_exams),
           completedExams: parseInt(stats[4].rows[0].completed_exams),
           pendingExams: parseInt(stats[5].rows[0].pending_exams),
+          totalQuestions: parseInt(stats[6].rows[0].total_questions),
+          totalModels: parseInt(stats[7].rows[0].total_models),
+          totalAttempts: parseInt(stats[8].rows[0].total_attempts),
         },
       });
     } catch (error) {

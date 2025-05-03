@@ -524,6 +524,331 @@ const instructorController = {
       });
     }
   },
+
+  // Question Bank Management
+  getQuestions: async (req, res) => {
+    const instructor_id = req.user.user_id;
+
+    try {
+      const query = `
+        SELECT q.*,
+               json_agg(
+                 json_build_object(
+                   'option_id', o.option_id,
+                   'option_text', o.option_text,
+                   'is_correct', o.is_correct
+                 )
+               ) as options
+        FROM question_bank q
+        LEFT JOIN question_bank_options o ON q.question_bank_id = o.question_bank_id
+        WHERE q.instructor_id = $1
+        GROUP BY q.question_bank_id
+        ORDER BY q.created_at DESC
+      `;
+
+      const result = await client.query(query, [instructor_id]);
+
+      res.status(200).json({
+        success: true,
+        data: result.rows,
+      });
+    } catch (error) {
+      console.error('Error fetching questions:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error fetching questions',
+        error: error.message,
+      });
+    }
+  },
+
+  addQuestion: async (req, res) => {
+    const { question_text, question_type, category, difficulty, options } =
+      req.body;
+    const instructor_id = req.user.user_id;
+
+    try {
+      // Start transaction
+      await client.query('BEGIN');
+
+      // Calculate score based on difficulty
+      const score = difficulty === 'easy' ? 1 : difficulty === 'medium' ? 2 : 3;
+
+      // Insert question into question bank
+      const questionQuery = `
+        INSERT INTO question_bank (question_text, question_type, category, score, instructor_id)
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING question_bank_id
+      `;
+      const questionResult = await client.query(questionQuery, [
+        question_text,
+        question_type,
+        category,
+        score,
+        instructor_id,
+      ]);
+
+      const question_bank_id = questionResult.rows[0].question_bank_id;
+
+      // If it's a multiple choice question, insert options
+      if (
+        question_type === 'multiple-choice' &&
+        options &&
+        options.length > 0
+      ) {
+        const optionsQuery = `
+          INSERT INTO question_bank_options (question_bank_id, option_text, is_correct)
+          VALUES ${options.map((_, i) => `($${i * 3 + 1}, $${i * 3 + 2}, $${i * 3 + 3})`).join(',')}
+        `;
+        const optionsValues = options.flatMap((option) => [
+          question_bank_id,
+          option.text,
+          option.is_correct,
+        ]);
+        await client.query(optionsQuery, optionsValues);
+      }
+
+      await client.query('COMMIT');
+
+      res.status(201).json({
+        success: true,
+        message: 'Question added successfully',
+        data: { question_bank_id },
+      });
+    } catch (error) {
+      await client.query('ROLLBACK');
+      console.error('Error adding question:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error adding question',
+        error: error.message,
+      });
+    }
+  },
+
+  updateQuestion: async (req, res) => {
+    const { questionId } = req.params;
+    const { question_text, question_type, category, difficulty, options } =
+      req.body;
+    const instructor_id = req.user.user_id;
+
+    try {
+      await client.query('BEGIN');
+
+      // Update question
+      const updateQuery = `
+        UPDATE question_bank
+        SET question_text = $1, question_type = $2, category = $3, score = $4
+        WHERE question_bank_id = $5 AND instructor_id = $6
+        RETURNING *
+      `;
+      const result = await client.query(updateQuery, [
+        question_text,
+        question_type,
+        category,
+        difficulty === 'easy' ? 1 : difficulty === 'medium' ? 2 : 3,
+        questionId,
+        instructor_id,
+      ]);
+
+      if (result.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({
+          success: false,
+          message: 'Question not found or unauthorized',
+        });
+      }
+
+      // Update options if it's a multiple choice question
+      if (question_type === 'multiple-choice' && options) {
+        // Delete existing options
+        await client.query(
+          'DELETE FROM question_bank_options WHERE question_bank_id = $1',
+          [questionId]
+        );
+
+        // Insert new options
+        if (options.length > 0) {
+          const optionsQuery = `
+            INSERT INTO question_bank_options (question_bank_id, option_text, is_correct)
+            VALUES ${options.map((_, i) => `($${i * 3 + 1}, $${i * 3 + 2}, $${i * 3 + 3})`).join(',')}
+          `;
+          const optionsValues = options.flatMap((option) => [
+            questionId,
+            option.text,
+            option.is_correct,
+          ]);
+          await client.query(optionsQuery, optionsValues);
+        }
+      }
+
+      await client.query('COMMIT');
+
+      res.status(200).json({
+        success: true,
+        message: 'Question updated successfully',
+      });
+    } catch (error) {
+      await client.query('ROLLBACK');
+      console.error('Error updating question:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error updating question',
+        error: error.message,
+      });
+    }
+  },
+
+  deleteQuestion: async (req, res) => {
+    const { questionId } = req.params;
+    const instructor_id = req.user.user_id;
+
+    try {
+      await client.query('BEGIN');
+
+      // Delete question and its options
+      const deleteQuery = `
+        DELETE FROM question_bank
+        WHERE question_bank_id = $1 AND instructor_id = $2
+        RETURNING *
+      `;
+      const result = await client.query(deleteQuery, [
+        questionId,
+        instructor_id,
+      ]);
+
+      if (result.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({
+          success: false,
+          message: 'Question not found or unauthorized',
+        });
+      }
+
+      await client.query('COMMIT');
+
+      res.status(200).json({
+        success: true,
+        message: 'Question deleted successfully',
+      });
+    } catch (error) {
+      await client.query('ROLLBACK');
+      console.error('Error deleting question:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error deleting question',
+        error: error.message,
+      });
+    }
+  },
+
+  // Exam Generation
+  generateExam: async (req, res) => {
+    const {
+      exam_name,
+      description,
+      duration,
+      categories = [],
+      difficulty_distribution = { easy: 0, medium: 0, hard: 0 },
+      min_questions = 10, // Default minimum questions
+      time_per_question = { easy: 2, medium: 3, hard: 5 }, // Default time in minutes
+    } = req.body;
+    const instructor_id = req.user.user_id;
+
+    try {
+      await client.query('BEGIN');
+
+      // Validate minimum questions requirement
+      const totalQuestions = Object.values(difficulty_distribution).reduce(
+        (a, b) => a + b,
+        0
+      );
+      if (totalQuestions < min_questions) {
+        return res.status(400).json({
+          success: false,
+          message: `Total questions (${totalQuestions}) is less than minimum required (${min_questions})`,
+        });
+      }
+
+      // Create exam
+      const examQuery = `
+        INSERT INTO exams (exam_name, description, duration, instructor_id)
+        VALUES ($1, $2, $3, $4)
+        RETURNING exam_id
+      `;
+      const examResult = await client.query(examQuery, [
+        exam_name,
+        description,
+        duration,
+        instructor_id,
+      ]);
+      const exam_id = examResult.rows[0].exam_id;
+
+      // Get questions for each difficulty level
+      const questions = [];
+      for (const [difficulty, count] of Object.entries(
+        difficulty_distribution
+      )) {
+        if (count > 0) {
+          const categoryFilter =
+            categories.length > 0
+              ? `AND category = ANY($${Object.keys(difficulty_distribution).indexOf(difficulty) + 2})`
+              : '';
+
+          const questionQuery = `
+            SELECT question_id
+            FROM question_bank
+            WHERE instructor_id = $1
+              AND difficulty = $${Object.keys(difficulty_distribution).indexOf(difficulty) + 1}
+              ${categoryFilter}
+            ORDER BY RANDOM()
+            LIMIT $${Object.keys(difficulty_distribution).length + 1}
+          `;
+
+          const params = [instructor_id, difficulty];
+          if (categories.length > 0) {
+            params.push(categories);
+          }
+          params.push(count);
+
+          const result = await client.query(questionQuery, params);
+          questions.push(...result.rows);
+        }
+      }
+
+      // Insert selected questions into exam_questions
+      if (questions.length > 0) {
+        const examQuestionsQuery = `
+          INSERT INTO exam_questions (exam_id, question_id)
+          VALUES ${questions.map((_, i) => `($${i * 2 + 1}, $${i * 2 + 2})`).join(',')}
+        `;
+        const examQuestionsValues = questions.flatMap((q) => [
+          exam_id,
+          q.question_id,
+        ]);
+        await client.query(examQuestionsQuery, examQuestionsValues);
+      }
+
+      await client.query('COMMIT');
+
+      res.status(201).json({
+        success: true,
+        message: 'Exam generated successfully',
+        data: {
+          exam_id,
+          total_questions: questions.length,
+        },
+      });
+    } catch (error) {
+      await client.query('ROLLBACK');
+      console.error('Error generating exam:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error generating exam',
+        error: error.message,
+      });
+    }
+  },
 };
 
 // Helper function to generate unique access code

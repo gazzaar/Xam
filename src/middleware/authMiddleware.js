@@ -14,7 +14,7 @@ const client = new Client({
 
 client.connect();
 
-const authMiddleware = async (req, res, next) => {
+const authenticateToken = async (req, res, next) => {
   try {
     // Get token from header
     const token = req.header('Authorization')?.replace('Bearer ', '');
@@ -54,4 +54,39 @@ const authMiddleware = async (req, res, next) => {
   }
 };
 
-module.exports = authMiddleware;
+const isInstructor = (req, res, next) => {
+  if (req.user.role !== 'instructor') {
+    return res.status(403).json({
+      success: false,
+      message: 'Access denied. Instructor role required.',
+    });
+  }
+  next();
+};
+
+const isAdmin = (req, res, next) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({
+      success: false,
+      message: 'Access denied. Admin role required.',
+    });
+  }
+  next();
+};
+
+const isStudent = (req, res, next) => {
+  if (req.user.role !== 'student') {
+    return res.status(403).json({
+      success: false,
+      message: 'Access denied. Student role required.',
+    });
+  }
+  next();
+};
+
+module.exports = {
+  authenticateToken,
+  isInstructor,
+  isAdmin,
+  isStudent,
+};
