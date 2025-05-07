@@ -62,8 +62,7 @@ const authController = {
   },
 
   registerInstructor: async (req, res) => {
-    const { username, password, email, firstName, lastName, department } =
-      req.body;
+    const { username, password, email, firstName, lastName } = req.body;
 
     try {
       // Start transaction
@@ -92,14 +91,6 @@ const authController = {
         [username, password, email, firstName, lastName]
       );
 
-      const userId = userResult.rows[0].user_id;
-
-      // Insert into instructors table
-      await client.query(
-        'INSERT INTO instructors (instructor_id, department) VALUES ($1, $2)',
-        [userId, department]
-      );
-
       // Commit transaction
       await client.query('COMMIT');
 
@@ -111,7 +102,6 @@ const authController = {
           email,
           firstName,
           lastName,
-          department,
         },
       });
     } catch (error) {
