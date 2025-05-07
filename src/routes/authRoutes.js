@@ -8,4 +8,7 @@ router.post('/login', authController.login);
 // Register instructor route
 router.post('/register/instructor', authController.registerInstructor);
 
+// Add logout route
+router.post('/logout', authController.logout);
+
 module.exports = router;

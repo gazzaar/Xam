@@ -1,11 +1,10 @@
 const express = require('express');
 const router = express.Router();
-const multer = require('multer');
 const instructorController = require('../controllers/instructorController');
 const authMiddleware = require('../middleware/authMiddleware');
 
 // Configure multer for file uploads
-const upload = multer({ dest: 'uploads/' });
+// const upload = multer({ dest: 'uploads/' });
 
 // Exam Generation
 router.post(
@@ -125,20 +124,14 @@ router.post(
   instructorController.addQuestions
 );
 
-/**
- * @route POST /api/instructor/exams/:exam_id/students/upload
- * @description Upload a CSV file of allowed students for an exam
- * @access Private (Instructor only)
- * @param {string} exam_id - ID of the exam
- * @body {File} file - CSV file containing student information
- */
-router.post(
-  '/exams/:exam_id/students/upload',
-  authMiddleware.authenticateToken,
-  authMiddleware.isInstructor,
-  upload.single('file'),
-  instructorController.uploadAllowedStudents
-);
+// Exam Student Management (commented out for now)
+// router.post(
+//   '/exams/:exam_id/students/upload',
+//   authMiddleware.authenticateToken,
+//   authMiddleware.isInstructor,
+//   upload.single('file'),
+//   instructorController.uploadAllowedStudents
+// );
 
 /**
  * @route GET /api/instructor/exams/:exam_id/results
@@ -238,5 +231,14 @@ router.put(
   authMiddleware.isInstructor,
   instructorController.updateQuestionInQuestionBank
 );
+
+// Commenting out file upload endpoint for now
+// router.post(
+//   '/exams/:exam_id/students/upload',
+//   authMiddleware.authenticateToken,
+//   authMiddleware.isInstructor,
+//   upload.single('students'),
+//   instructorController.uploadAllowedStudents
+// );
 
 module.exports = router;
