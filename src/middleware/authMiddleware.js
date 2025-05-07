@@ -1,18 +1,10 @@
 const jwt = require('jsonwebtoken');
-const { Client } = require('pg');
+const pool = require('../db/pool');
 const dotenv = require('dotenv');
 
 dotenv.config();
 
-const dbUser = process.env.DB_USER;
-const dbPass = process.env.DB_PASS;
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
-
-const client = new Client({
-  connectionString: `postgresql://${dbUser}:${dbPass}@localhost:5432/xam`,
-});
-
-client.connect();
 
 const authenticateToken = async (req, res, next) => {
   try {
@@ -30,7 +22,7 @@ const authenticateToken = async (req, res, next) => {
     const decoded = jwt.verify(token, JWT_SECRET);
 
     // Get user from database
-    const result = await client.query(
+    const result = await pool.query(
       'SELECT user_id, username, role, is_approved FROM users WHERE user_id = $1',
       [decoded.userId]
     );
