@@ -9,7 +9,7 @@ const authMiddleware = require('../middleware/authMiddleware');
 // Exam Generation
 router.post(
   '/exams/generate',
-  authMiddleware.authenticateToken,
+  authMiddleware.verifyToken,
   authMiddleware.isInstructor,
   instructorController.generateExam
 );
@@ -17,25 +17,25 @@ router.post(
 // Question Management
 router.post(
   '/questions',
-  authMiddleware.authenticateToken,
+  authMiddleware.verifyToken,
   authMiddleware.isInstructor,
   instructorController.addQuestion
 );
 router.get(
   '/questions',
-  authMiddleware.authenticateToken,
+  authMiddleware.verifyToken,
   authMiddleware.isInstructor,
   instructorController.getQuestions
 );
 router.put(
   '/questions/:questionId',
-  authMiddleware.authenticateToken,
+  authMiddleware.verifyToken,
   authMiddleware.isInstructor,
   instructorController.updateQuestion
 );
 router.delete(
   '/questions/:questionId',
-  authMiddleware.authenticateToken,
+  authMiddleware.verifyToken,
   authMiddleware.isInstructor,
   instructorController.deleteQuestion
 );
@@ -51,7 +51,7 @@ router.delete(
  */
 router.post(
   '/exams',
-  authMiddleware.authenticateToken,
+  authMiddleware.verifyToken,
   authMiddleware.isInstructor,
   instructorController.createExam
 );
@@ -63,7 +63,7 @@ router.post(
  */
 router.get(
   '/exams',
-  authMiddleware.authenticateToken,
+  authMiddleware.verifyToken,
   authMiddleware.isInstructor,
   instructorController.getExams
 );
@@ -79,7 +79,7 @@ router.get(
  */
 router.put(
   '/exams/:exam_id',
-  authMiddleware.authenticateToken,
+  authMiddleware.verifyToken,
   authMiddleware.isInstructor,
   instructorController.updateExam
 );
@@ -92,7 +92,7 @@ router.put(
  */
 router.delete(
   '/exams/:exam_id',
-  authMiddleware.authenticateToken,
+  authMiddleware.verifyToken,
   authMiddleware.isInstructor,
   instructorController.deleteExam
 );
@@ -105,7 +105,7 @@ router.delete(
  */
 router.get(
   '/exams/:id/preview',
-  authMiddleware.authenticateToken,
+  authMiddleware.verifyToken,
   authMiddleware.isInstructor,
   instructorController.getExamPreview
 );
@@ -119,7 +119,7 @@ router.get(
  */
 router.post(
   '/exams/:exam_id/questions',
-  authMiddleware.authenticateToken,
+  authMiddleware.verifyToken,
   authMiddleware.isInstructor,
   instructorController.addQuestions
 );
@@ -141,7 +141,7 @@ router.post(
  */
 router.get(
   '/exams/:exam_id/results',
-  authMiddleware.authenticateToken,
+  authMiddleware.verifyToken,
   authMiddleware.isInstructor,
   instructorController.getExamResults
 );
@@ -154,7 +154,7 @@ router.get(
  */
 router.get(
   '/dashboard',
-  authMiddleware.authenticateToken,
+  authMiddleware.verifyToken,
   authMiddleware.isInstructor,
   instructorController.getDashboardStats
 );
@@ -162,21 +162,21 @@ router.get(
 // Course Management
 router.post(
   '/courses',
-  authMiddleware.authenticateToken,
+  authMiddleware.verifyToken,
   authMiddleware.isInstructor,
   instructorController.createCourse
 );
 
 router.get(
   '/courses',
-  authMiddleware.authenticateToken,
+  authMiddleware.verifyToken,
   authMiddleware.isInstructor,
   instructorController.getCourses
 );
 
 router.delete(
   '/courses/:course_id',
-  authMiddleware.authenticateToken,
+  authMiddleware.verifyToken,
   authMiddleware.isInstructor,
   instructorController.deleteCourse
 );
@@ -184,21 +184,21 @@ router.delete(
 // Question Bank Management
 router.post(
   '/question-banks',
-  authMiddleware.authenticateToken,
+  authMiddleware.verifyToken,
   authMiddleware.isInstructor,
   instructorController.createQuestionBank
 );
 
 router.get(
   '/question-banks',
-  authMiddleware.authenticateToken,
+  authMiddleware.verifyToken,
   authMiddleware.isInstructor,
   instructorController.getQuestionBanks
 );
 
 router.delete(
   '/question-banks/:question_bank_id',
-  authMiddleware.authenticateToken,
+  authMiddleware.verifyToken,
   authMiddleware.isInstructor,
   instructorController.deleteQuestionBank
 );
@@ -206,28 +206,28 @@ router.delete(
 // Question Bank Questions
 router.get(
   '/question-banks/:question_bank_id/questions',
-  authMiddleware.authenticateToken,
+  authMiddleware.verifyToken,
   authMiddleware.isInstructor,
   instructorController.getQuestionsInQuestionBank
 );
 
 router.post(
   '/question-banks/:question_bank_id/questions',
-  authMiddleware.authenticateToken,
+  authMiddleware.verifyToken,
   authMiddleware.isInstructor,
   instructorController.addQuestionsToQuestionBank
 );
 
 router.delete(
   '/question-banks/:question_bank_id/questions/:question_id',
-  authMiddleware.authenticateToken,
+  authMiddleware.verifyToken,
   authMiddleware.isInstructor,
   instructorController.deleteQuestionFromQuestionBank
 );
 
 router.put(
   '/question-banks/:question_bank_id/questions/:question_id',
-  authMiddleware.authenticateToken,
+  authMiddleware.verifyToken,
   authMiddleware.isInstructor,
   instructorController.updateQuestionInQuestionBank
 );
