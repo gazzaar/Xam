@@ -160,25 +160,29 @@ router.get(
 );
 
 // Course Management
-router.post(
-  '/courses',
-  authMiddleware.verifyToken,
-  authMiddleware.isInstructor,
-  instructorController.createCourse
-);
-
 router.get(
   '/courses',
   authMiddleware.verifyToken,
   authMiddleware.isInstructor,
   instructorController.getCourses
 );
-
-router.delete(
-  '/courses/:course_id',
+router.post(
+  '/courses/:courseId/chapters',
   authMiddleware.verifyToken,
   authMiddleware.isInstructor,
-  instructorController.deleteCourse
+  instructorController.addChaptersToCourse
+);
+router.get(
+  '/courses/:courseId/chapters',
+  authMiddleware.verifyToken,
+  authMiddleware.isInstructor,
+  instructorController.getChaptersForCourse
+);
+router.delete(
+  '/courses/:courseId/chapters/:chapterId',
+  authMiddleware.verifyToken,
+  authMiddleware.isInstructor,
+  instructorController.deleteChapter
 );
 
 // Question Bank Management

@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const morgan = require('morgan');
 const dotenv = require('dotenv');
+const path = require('path');
 
 // Import routes
 // const indexRouter = require('./routes/indexRouter');
@@ -23,8 +24,9 @@ app.use(express.urlencoded({ extended: true }));
 
 // Create uploads directory for CSV files
 const fs = require('fs');
-if (!fs.existsSync('uploads')) {
-  fs.mkdirSync('uploads');
+const uploadsDir = path.join(__dirname, 'uploads');
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir);
 }
 
 // Routes
@@ -39,6 +41,33 @@ app.use('/api/exam', examRoutes);
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error(err.stack);
+
+  // Handle JWT errors
+  if (err.name === 'JsonWebTokenError') {
+    return res.status(401).json({
+      success: false,
+      message: 'Invalid token',
+    });
+  }
+
+  // Handle token expiration
+  if (err.name === 'TokenExpiredError') {
+    return res.status(401).json({
+      success: false,
+      message: 'Token expired',
+    });
+  }
+
+  // Handle database errors
+  if (err.code === '23505') {
+    // Unique violation
+    return res.status(409).json({
+      success: false,
+      message: 'Resource already exists',
+    });
+  }
+
+  // Handle other errors
   res.status(500).json({
     success: false,
     message: 'Something broke!',

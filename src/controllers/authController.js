@@ -19,25 +19,66 @@ const authController = {
     const { username, password } = req.body;
 
     try {
-      // Get user from database
-      const result = await client.query(
-        'SELECT user_id, username, role, is_approved FROM users WHERE username = $1 AND password = $2',
-        [username, password]
+      // Check if user exists and password is correct
+      const userResult = await client.query(
+        'SELECT * FROM users WHERE username = $1',
+        [username]
       );
 
-      if (result.rows.length === 0) {
+      if (userResult.rows.length === 0) {
         return res.status(401).json({
           success: false,
-          message: 'Invalid credentials',
+          message: 'Invalid username or password',
         });
       }
 
-      const user = result.rows[0];
+      const user = userResult.rows[0];
 
-      // Create token
+      // For instructors, check if they are approved
+      if (user.role === 'instructor' && !user.is_approved) {
+        return res.status(401).json({
+          success: false,
+          message: 'Your account is pending approval',
+        });
+      }
+
+      // Check if user is active
+      if (!user.is_active) {
+        return res.status(401).json({
+          success: false,
+          message: 'Your account has been deactivated',
+        });
+      }
+
+      // Compare password
+      if (password !== user.password) {
+        return res.status(401).json({
+          success: false,
+          message: 'Invalid username or password',
+        });
+      }
+
+      // If user is an instructor, get their assigned courses
+      let assigned_courses = [];
+      if (user.role === 'instructor') {
+        const coursesResult = await client.query(
+          `SELECT c.course_id, c.course_name, c.course_code
+           FROM courses c
+           JOIN course_assignments ca ON c.course_id = ca.course_id
+           WHERE ca.instructor_id = $1 AND ca.is_active = true`,
+          [user.user_id]
+        );
+        assigned_courses = coursesResult.rows;
+      }
+
+      // Generate JWT token
       const token = jwt.sign(
-        { userId: user.user_id, role: user.role },
-        JWT_SECRET,
+        {
+          userId: user.user_id,
+          username: user.username,
+          role: user.role,
+        },
+        process.env.JWT_SECRET,
         { expiresIn: '24h' }
       );
 
@@ -49,6 +90,10 @@ const authController = {
           username: user.username,
           role: user.role,
           isApproved: user.is_approved,
+          firstName: user.first_name,
+          lastName: user.last_name,
+          email: user.email,
+          assignedCourses: assigned_courses,
         },
       });
     } catch (error) {
@@ -61,76 +106,13 @@ const authController = {
     }
   },
 
-  registerInstructor: async (req, res) => {
-    const { username, password, email, firstName, lastName } = req.body;
-
-    try {
-      // Start transaction
-      await client.query('BEGIN');
-
-      // Check if username or email already exists
-      const checkUser = await client.query(
-        'SELECT username, email FROM users WHERE username = $1 OR email = $2',
-        [username, email]
-      );
-
-      if (checkUser.rows.length > 0) {
-        await client.query('ROLLBACK');
-        return res.status(400).json({
-          success: false,
-          message: 'Username or email already exists',
-        });
-      }
-
-      // Insert into users table
-      const userResult = await client.query(
-        `INSERT INTO users
-         (username, password, email, first_name, last_name, role, is_approved)
-         VALUES ($1, $2, $3, $4, $5, 'instructor', false)
-         RETURNING user_id`,
-        [username, password, email, firstName, lastName]
-      );
-
-      // Commit transaction
-      await client.query('COMMIT');
-
-      res.status(201).json({
-        success: true,
-        message: 'Registration successful. Waiting for admin approval.',
-        data: {
-          username,
-          email,
-          firstName,
-          lastName,
-        },
-      });
-    } catch (error) {
-      await client.query('ROLLBACK');
-      console.error('Registration error:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Error during registration',
-        error: error.message,
-      });
-    }
-  },
-
   logout: async (req, res) => {
-    try {
-      // You could implement token blacklisting here if needed
-      // For now, we'll just send a success response
-      res.status(200).json({
-        success: true,
-        message: 'Logged out successfully',
-      });
-    } catch (error) {
-      console.error('Logout error:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Error during logout',
-        error: error.message,
-      });
-    }
+    // Since we're using JWT, we don't need to do anything server-side
+    // The client will remove the token
+    res.status(200).json({
+      success: true,
+      message: 'Logged out successfully',
+    });
   },
 };
 

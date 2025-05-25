@@ -8,7 +8,7 @@ const dbPass = process.env.DB_PASS;
 module.exports = new Pool({
   host: 'localhost',
   user: dbUser,
-  database: 'test_nova',
+  database: 'xam',
   password: dbPass,
   port: 5432,
 });

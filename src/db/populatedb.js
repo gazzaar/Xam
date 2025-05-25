@@ -9,7 +9,7 @@ const SQL = `
 -- Create role ENUM type
 CREATE TYPE user_role AS ENUM ('instructor', 'admin');
 
--- Create question_type ENUM - simplified to just the types you mentioned
+-- Create question_type ENUM
 CREATE TYPE question_type AS ENUM ('multiple-choice', 'true/false');
 
 -- Create users table
@@ -25,15 +25,41 @@ CREATE TABLE IF NOT EXISTS users (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Create courses table
+-- Create courses table (independent of instructors)
 CREATE TABLE IF NOT EXISTS courses (
   course_id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
   course_name VARCHAR(255) NOT NULL,
   course_code VARCHAR(50) NOT NULL UNIQUE,
-  description TEXT
+  description TEXT,
+  is_active BOOLEAN DEFAULT true,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  created_by INTEGER REFERENCES users(user_id) -- admin who created the course
 );
 
--- Create questions table
+-- Create course_assignments table (links courses to instructors)
+CREATE TABLE IF NOT EXISTS course_assignments (
+  assignment_id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+  course_id INTEGER REFERENCES courses(course_id) ON DELETE CASCADE,
+  instructor_id INTEGER REFERENCES users(user_id) ON DELETE CASCADE,
+  assigned_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  end_date TIMESTAMP,
+  is_active BOOLEAN DEFAULT true,
+  assigned_by INTEGER REFERENCES users(user_id), -- admin who made the assignment
+  UNIQUE(course_id, instructor_id, is_active)
+);
+
+-- Create question_banks table (tied to courses, managed by admin)
+CREATE TABLE IF NOT EXISTS question_banks (
+  question_bank_id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+  bank_name VARCHAR(255) NOT NULL,
+  description TEXT,
+  course_id INTEGER REFERENCES courses(course_id) ON DELETE CASCADE,
+  is_active BOOLEAN DEFAULT true,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  created_by INTEGER REFERENCES users(user_id) -- admin who created the bank
+);
+
+-- Create questions table (instructors can add questions to banks)
 CREATE TABLE IF NOT EXISTS questions (
   question_id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
   question_text TEXT NOT NULL,
@@ -41,8 +67,8 @@ CREATE TABLE IF NOT EXISTS questions (
   points INTEGER NOT NULL,
   image_url VARCHAR(255),
   chapter VARCHAR(50),
-  course_id INTEGER REFERENCES courses(course_id),
-  instructor_id INTEGER REFERENCES users(user_id),
+  question_bank_id INTEGER REFERENCES question_banks(question_bank_id) ON DELETE CASCADE,
+  created_by INTEGER REFERENCES users(user_id), -- instructor who created the question
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -54,8 +80,8 @@ CREATE TABLE IF NOT EXISTS question_tags (
 
 -- Create question_tag_mapping for many-to-many relationship
 CREATE TABLE IF NOT EXISTS question_tag_mapping (
-  question_id INTEGER REFERENCES questions(question_id),
-  tag_id INTEGER REFERENCES question_tags(tag_id),
+  question_id INTEGER REFERENCES questions(question_id) ON DELETE CASCADE,
+  tag_id INTEGER REFERENCES question_tags(tag_id) ON DELETE CASCADE,
   PRIMARY KEY (question_id, tag_id)
 );
 
@@ -75,9 +101,9 @@ CREATE TABLE IF NOT EXISTS exams (
   time_limit_minutes INTEGER NOT NULL,
   start_date TIMESTAMP NOT NULL,
   end_date TIMESTAMP NOT NULL,
-  instructor_id INTEGER REFERENCES users(user_id),
-  course_id INTEGER REFERENCES courses(course_id),
-  access_code VARCHAR(10) UNIQUE,
+  course_id INTEGER REFERENCES courses(course_id) ON DELETE CASCADE,
+  created_by INTEGER REFERENCES users(user_id), -- instructor who created the exam
+  access_code VARCHAR(16) UNIQUE,
   is_active BOOLEAN DEFAULT true,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -86,8 +112,7 @@ CREATE TABLE IF NOT EXISTS exams (
 CREATE TABLE IF NOT EXISTS exam_specifications (
   spec_id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
   exam_id INTEGER REFERENCES exams(exam_id) ON DELETE CASCADE,
-  tag_id INTEGER REFERENCES question_tags(tag_id),
-  chapter VARCHAR(50),
+  question_bank_id INTEGER REFERENCES question_banks(question_bank_id),
   num_questions INTEGER NOT NULL,
   points_per_question INTEGER,
   CONSTRAINT check_num_questions CHECK (num_questions > 0)
@@ -102,7 +127,7 @@ CREATE TABLE IF NOT EXISTS allowed_students (
   UNIQUE(exam_id, uni_id)
 );
 
--- Create student_exams table to track dynamically generated exams
+-- Create student_exams table
 CREATE TABLE IF NOT EXISTS student_exams (
   student_exam_id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
   exam_id INTEGER REFERENCES exams(exam_id) ON DELETE CASCADE,
@@ -115,7 +140,7 @@ CREATE TABLE IF NOT EXISTS student_exams (
   UNIQUE(exam_id, uni_id)
 );
 
--- Create student_exam_questions table to store which questions were given to each student
+-- Create student_exam_questions table
 CREATE TABLE IF NOT EXISTS student_exam_questions (
   student_question_id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
   student_exam_id INTEGER REFERENCES student_exams(student_exam_id) ON DELETE CASCADE,
@@ -126,7 +151,12 @@ CREATE TABLE IF NOT EXISTS student_exam_questions (
   UNIQUE(student_exam_id, question_order)
 );
 
--- Function to dynamically generate an exam for a student
+-- Insert initial admin user
+INSERT INTO users (username, password, role, is_approved, email, first_name, last_name)
+VALUES ('admin', 'admin123', 'admin', true, 'admin@example.com', 'Admin', 'User')
+ON CONFLICT DO NOTHING;
+
+-- Create functions for exam generation and grading
 CREATE OR REPLACE FUNCTION generate_student_exam(p_exam_id INTEGER, p_uni_id VARCHAR(255), p_student_name VARCHAR(255))
 RETURNS INTEGER AS $$
 DECLARE
@@ -139,22 +169,16 @@ BEGIN
   VALUES (p_exam_id, p_uni_id, p_student_name, 'not_started')
   RETURNING student_exam_id INTO v_student_exam_id;
 
-  -- Process each specification for the exam
+  -- Process each specification
   FOR v_spec IN
     SELECT * FROM exam_specifications WHERE exam_id = p_exam_id
   LOOP
-    -- Query to get questions matching the specification
+    -- Insert selected questions
     WITH eligible_questions AS (
       SELECT q.question_id
       FROM questions q
-      LEFT JOIN question_tag_mapping qtm ON q.question_id = qtm.question_id
-      LEFT JOIN question_tags t ON qtm.tag_id = t.tag_id
-      WHERE
-        (v_spec.tag_id IS NULL OR qtm.tag_id = v_spec.tag_id) AND
-        (v_spec.chapter IS NULL OR q.chapter = v_spec.chapter) AND
-        q.course_id = (SELECT course_id FROM exams WHERE exam_id = p_exam_id)
+      WHERE q.question_bank_id = v_spec.question_bank_id
     )
-    -- Insert selected questions into student_exam_questions
     INSERT INTO student_exam_questions (student_exam_id, question_id, question_order)
     SELECT
       v_student_exam_id,
@@ -164,7 +188,6 @@ BEGIN
     ORDER BY random()
     LIMIT v_spec.num_questions;
 
-    -- Update question count for next specification
     v_question_count := v_question_count + v_spec.num_questions;
   END LOOP;
 
@@ -172,21 +195,20 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Function to grade a student's exam
-CREATE OR REPLACE FUNCTION grade_student_exam(p_student_exam_id INTEGER) RETURNS NUMERIC AS $$
+-- Function to grade student exam
+CREATE OR REPLACE FUNCTION grade_student_exam(p_student_exam_id INTEGER)
+RETURNS NUMERIC AS $$
 DECLARE
   v_total_score NUMERIC(5,2) := 0;
   v_total_possible NUMERIC(5,2) := 0;
   v_question RECORD;
 BEGIN
-  -- Update each question's correctness
   FOR v_question IN
     SELECT seq.student_question_id, seq.student_answer, q.question_id, q.points, q.question_type
     FROM student_exam_questions seq
     JOIN questions q ON seq.question_id = q.question_id
     WHERE seq.student_exam_id = p_student_exam_id
   LOOP
-    -- For multiple choice and true/false questions
     IF v_question.question_type IN ('multiple-choice', 'true/false') THEN
       UPDATE student_exam_questions
       SET is_correct = (
@@ -201,10 +223,8 @@ BEGIN
       WHERE student_question_id = v_question.student_question_id;
     END IF;
 
-    -- Add to total possible points
     v_total_possible := v_total_possible + v_question.points;
 
-    -- Add to score if correct
     IF EXISTS (
       SELECT 1 FROM student_exam_questions
       WHERE student_question_id = v_question.student_question_id AND is_correct = TRUE
@@ -213,39 +233,32 @@ BEGIN
     END IF;
   END LOOP;
 
-  -- Calculate percentage score
-  DECLARE v_percentage NUMERIC(5,2);
-  BEGIN
-    IF v_total_possible > 0 THEN
-      v_percentage := (v_total_score / v_total_possible) * 100;
-    ELSE
-      v_percentage := 0;
-    END IF;
-
-    -- Update the student_exams table with the final score
+  IF v_total_possible > 0 THEN
     UPDATE student_exams
-    SET score = v_percentage,
+    SET score = (v_total_score / v_total_possible) * 100,
         status = 'completed',
         end_time = CURRENT_TIMESTAMP
     WHERE student_exam_id = p_student_exam_id;
 
-    RETURN v_percentage;
-  END;
+    RETURN (v_total_score / v_total_possible) * 100;
+  END IF;
+
+  RETURN 0;
 END;
 $$ LANGUAGE plpgsql;
 `;
 
 async function main() {
-  console.log('seeding...');
+  console.log('Seeding database...');
   const client = new Client({
     connectionString: `postgresql://${dbUser}:${dbPass}@localhost:5432/xam`,
   });
   try {
     await client.connect();
     await client.query(SQL);
-    console.log('done');
+    console.log('Database seeded successfully');
   } catch (err) {
-    console.error('Error executing query:', err.stack);
+    console.error('Error seeding database:', err.stack);
   } finally {
     await client.end();
   }

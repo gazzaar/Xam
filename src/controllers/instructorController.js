@@ -28,6 +28,41 @@ const handleDbError = (res, error) => {
 };
 
 class InstructorController {
+  // Get instructor's assigned courses
+  async getCourses(req, res) {
+    const client = await pool.connect();
+    try {
+      const user_id = req.user.userId;
+
+      // Get only courses assigned to the instructor
+      const result = await client.query(
+        `SELECT DISTINCT c.*,
+          (
+            SELECT COUNT(*)
+            FROM question_banks qb
+            WHERE qb.course_id = c.course_id
+          ) as question_banks_count,
+          (
+            SELECT COUNT(*)
+            FROM questions q
+            JOIN question_banks qb ON q.question_bank_id = qb.question_bank_id
+            WHERE qb.course_id = c.course_id
+          ) as total_questions
+         FROM courses c
+         JOIN course_assignments ca ON c.course_id = ca.course_id
+         WHERE ca.instructor_id = $1 AND ca.is_active = true
+         ORDER BY c.created_at DESC`,
+        [user_id]
+      );
+
+      res.json(result.rows);
+    } catch (error) {
+      handleDbError(res, error);
+    } finally {
+      client.release();
+    }
+  }
+
   // Create a new course
   async createCourse(req, res) {
     const client = await pool.connect();
@@ -72,42 +107,68 @@ class InstructorController {
     }
   }
 
-  // Get all courses for an instructor
-  async getCourses(req, res) {
+  // Delete course
+  async deleteCourse(req, res) {
+    const client = await pool.connect();
     try {
-      console.log('Request user object:', req.user);
       const user_id = req.user.userId;
-      console.log('Fetching courses for user_id:', user_id);
-      console.log('Auth header:', req.headers.authorization);
+      const { course_id } = req.params;
 
-      // First, check if there are any courses at all
-      const allCoursesResult = await pool.query('SELECT COUNT(*) FROM courses');
-      console.log('Total courses in database:', allCoursesResult.rows[0].count);
-
-      // Check course assignments
-      const assignmentsResult = await pool.query(
-        'SELECT * FROM course_assignments WHERE instructor_id = $1',
-        [user_id]
-      );
-      console.log('Course assignments for instructor:', assignmentsResult.rows);
-
-      // Now execute the main query
-      const result = await pool.query(
-        `SELECT c.course_id, c.course_name, c.course_code, c.description
-         FROM courses c
-         JOIN course_assignments ca ON c.course_id = ca.course_id
-         WHERE ca.instructor_id = $1 AND ca.is_active = true
-         ORDER BY c.course_name`,
-        [user_id]
+      // Verify the course belongs to the instructor through course_assignments
+      const courseResult = await client.query(
+        `SELECT * FROM course_assignments WHERE course_id = $1 AND instructor_id = $2 AND is_active = true`,
+        [course_id, user_id]
       );
 
-      console.log('Final query result:', result.rows);
+      if (courseResult.rows.length === 0) {
+        return res
+          .status(403)
+          .json({ error: 'You do not have permission to delete this course' });
+      }
 
-      console.log('Courses found:', result.rows);
-      res.json(result.rows);
+      // Check if there are any exams using this course
+      const examsResult = await client.query(
+        `SELECT * FROM exams WHERE course_id = $1`,
+        [course_id]
+      );
+
+      if (examsResult.rows.length > 0) {
+        return res.status(400).json({
+          error: 'Cannot delete course that is being used by exams',
+          count: examsResult.rows.length,
+        });
+      }
+
+      // Begin transaction
+      await client.query('BEGIN');
+
+      // Delete all question banks associated with this course
+      await client.query(`DELETE FROM question_banks WHERE course_id = $1`, [
+        course_id,
+      ]);
+
+      // Delete course assignments
+      await client.query(
+        `DELETE FROM course_assignments WHERE course_id = $1`,
+        [course_id]
+      );
+
+      // Delete the course
+      await client.query(`DELETE FROM courses WHERE course_id = $1`, [
+        course_id,
+      ]);
+
+      await client.query('COMMIT');
+
+      res.status(200).json({
+        message: 'Course deleted successfully',
+      });
     } catch (error) {
-      console.error('Error fetching courses:', error);
+      await client.query('ROLLBACK');
+      console.error('Error deleting course:', error);
       handleDbError(res, error);
+    } finally {
+      client.release();
     }
   }
 
@@ -227,6 +288,14 @@ class InstructorController {
 
       // Add each question
       for (const question of questions) {
+        // Validate points
+        const points = parseInt(question.points) || 1;
+        if (points < 1 || points > 15) {
+          return res.status(400).json({
+            error: 'Question points must be between 1 and 15',
+          });
+        }
+
         const questionResult = await client.query(
           `INSERT INTO questions
            (question_text, question_type, points, image_url, chapter, question_bank_id, created_by)
@@ -235,7 +304,7 @@ class InstructorController {
           [
             question.question_text,
             question.question_type,
-            question.points || 1,
+            points,
             question.image_url,
             question.chapter,
             question_bank_id,
@@ -245,22 +314,9 @@ class InstructorController {
 
         // Add options if multiple-choice
         if (question.options && question.options.length > 0) {
-          console.log(
-            'Adding options for question:',
-            questionResult.rows[0].question_id
-          );
-          console.log(
-            'Options data:',
-            JSON.stringify(question.options, null, 2)
-          );
-
           for (const option of question.options) {
             // Ensure is_correct is a boolean
             const isCorrect = option.is_correct === true;
-            console.log(
-              `Adding option: ${option.text}, isCorrect: ${isCorrect}`
-            );
-
             await client.query(
               `INSERT INTO question_options (question_id, option_text, is_correct)
                VALUES ($1, $2, $3)`,
@@ -560,24 +616,8 @@ class InstructorController {
       await client.query('BEGIN');
 
       const { question_bank_id, question_id } = req.params;
-      const {
-        question_text,
-        question_type,
-        options,
-        explanation,
-        points,
-        image_url,
-        chapter,
-      } = req.body;
+      const questionData = req.body;
       const user_id = req.user.userId;
-
-      console.log(
-        'Updating question:',
-        question_id,
-        'in question bank:',
-        question_bank_id
-      );
-      console.log('Request body:', JSON.stringify(req.body, null, 2));
 
       // Verify instructor has access to the question bank
       const bankCheck = await client.query(
@@ -598,6 +638,15 @@ class InstructorController {
         });
       }
 
+      // Validate points
+      const updatedPoints = parseInt(questionData.points) || 1;
+      if (updatedPoints < 1 || updatedPoints > 15) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          error: 'Question points must be between 1 and 15',
+        });
+      }
+
       // Update question
       await client.query(
         `UPDATE questions
@@ -609,11 +658,11 @@ class InstructorController {
          WHERE question_id = $6
          AND question_bank_id = $7`,
         [
-          question_text || '',
-          question_type || 'multiple-choice',
-          points || 1,
-          image_url || '',
-          chapter || '',
+          questionData.question_text || '',
+          questionData.question_type || 'multiple-choice',
+          updatedPoints,
+          questionData.image_url || '',
+          questionData.chapter || '',
           question_id,
           question_bank_id,
         ]
@@ -626,23 +675,11 @@ class InstructorController {
       );
 
       // Add new options
-      if (options && Array.isArray(options) && options.length > 0) {
-        for (const option of options) {
-          if (!option || typeof option !== 'object') {
-            console.error('Invalid option format:', option);
-            continue;
-          }
-
+      if (questionData.options && Array.isArray(questionData.options)) {
+        for (const option of questionData.options) {
+          if (!option || typeof option !== 'object') continue;
           const optionText = option.text || '';
           const isCorrect = option.is_correct === true;
-
-          console.log(
-            'Adding option:',
-            JSON.stringify({
-              text: optionText,
-              is_correct: isCorrect,
-            })
-          );
 
           await client.query(
             `INSERT INTO question_options (question_id, option_text, is_correct)
@@ -782,71 +819,6 @@ class InstructorController {
   generateRandomCode(length) {
     // This method is no longer used - we're using UUID instead
     return '';
-  }
-
-  // Delete course
-  async deleteCourse(req, res) {
-    const client = await pool.connect();
-    try {
-      const user_id = req.user.userId;
-      const { course_id } = req.params;
-
-      // Verify the course belongs to the instructor through course_assignments
-      const courseResult = await client.query(
-        `SELECT * FROM course_assignments WHERE course_id = $1 AND instructor_id = $2 AND is_active = true`,
-        [course_id, user_id]
-      );
-
-      if (courseResult.rows.length === 0) {
-        return res
-          .status(403)
-          .json({ error: 'You do not have permission to delete this course' });
-      }
-
-      // Check if there are any exams using this course
-      const examsResult = await client.query(
-        `SELECT * FROM exams WHERE course_id = $1`,
-        [course_id]
-      );
-
-      if (examsResult.rows.length > 0) {
-        return res.status(400).json({
-          error: 'Cannot delete course that is being used by exams',
-          count: examsResult.rows.length,
-        });
-      }
-
-      // Begin transaction
-      await client.query('BEGIN');
-
-      // Delete all question banks associated with this course
-      await client.query(`DELETE FROM question_banks WHERE course_id = $1`, [
-        course_id,
-      ]);
-
-      // Delete course assignments
-      await client.query(
-        `DELETE FROM course_assignments WHERE course_id = $1`,
-        [course_id]
-      );
-
-      // Delete the course
-      await client.query(`DELETE FROM courses WHERE course_id = $1`, [
-        course_id,
-      ]);
-
-      await client.query('COMMIT');
-
-      res.status(200).json({
-        message: 'Course deleted successfully',
-      });
-    } catch (error) {
-      await client.query('ROLLBACK');
-      console.error('Error deleting course:', error);
-      handleDbError(res, error);
-    } finally {
-      client.release();
-    }
   }
 
   // Delete question bank
@@ -1451,6 +1423,155 @@ class InstructorController {
     } catch (error) {
       console.error('Error fetching exam preview:', error);
       handleDbError(res, error);
+    }
+  }
+
+  // Add chapters to a course
+  async addChaptersToCourse(req, res) {
+    const client = await pool.connect();
+    try {
+      const { course_id } = req.params;
+      const { num_chapters } = req.body;
+      const user_id = req.user.userId;
+
+      // Validate number of chapters
+      if (!num_chapters || num_chapters < 1 || num_chapters > 20) {
+        return res.status(400).json({
+          error: 'Number of chapters must be between 1 and 20',
+        });
+      }
+
+      // Verify instructor has access to the course
+      const courseCheck = await client.query(
+        `SELECT course_id
+         FROM course_assignments
+         WHERE course_id = $1 AND instructor_id = $2 AND is_active = true`,
+        [course_id, user_id]
+      );
+
+      if (courseCheck.rows.length === 0) {
+        return res.status(403).json({
+          error: 'You do not have permission to modify this course',
+        });
+      }
+
+      await client.query('BEGIN');
+
+      // Delete existing chapters
+      await client.query(`DELETE FROM course_chapters WHERE course_id = $1`, [
+        course_id,
+      ]);
+
+      // Add chapters based on the number specified
+      for (let i = 1; i <= num_chapters; i++) {
+        await client.query(
+          `INSERT INTO course_chapters (course_id, chapter_number)
+           VALUES ($1, $2)`,
+          [course_id, i]
+        );
+      }
+
+      await client.query('COMMIT');
+
+      // Get all chapters for the course
+      const result = await client.query(
+        `SELECT chapter_id, chapter_number
+         FROM course_chapters
+         WHERE course_id = $1
+         ORDER BY chapter_number`,
+        [course_id]
+      );
+
+      res.status(200).json(result.rows);
+    } catch (error) {
+      await client.query('ROLLBACK');
+      console.error('Error adding chapters:', error);
+      handleDbError(res, error);
+    } finally {
+      client.release();
+    }
+  }
+
+  // Get chapters for a course
+  async getChaptersForCourse(req, res) {
+    const client = await pool.connect();
+    try {
+      const { courseId } = req.params;
+      const user_id = req.user.userId;
+
+      // First verify that the instructor is assigned to this course
+      const courseCheck = await client.query(
+        `SELECT course_id
+         FROM course_assignments
+         WHERE course_id = $1 AND instructor_id = $2 AND is_active = true`,
+        [courseId, user_id]
+      );
+
+      if (courseCheck.rows.length === 0) {
+        return res.status(403).json({
+          error: 'You do not have permission to access this course',
+        });
+      }
+
+      // Get all chapters for the course
+      const result = await client.query(
+        `SELECT chapter_id, chapter_number
+         FROM course_chapters
+         WHERE course_id = $1
+         ORDER BY chapter_number`,
+        [courseId]
+      );
+
+      res.json(result.rows);
+    } catch (error) {
+      console.error('Error fetching chapters:', error);
+      handleDbError(res, error);
+    } finally {
+      client.release();
+    }
+  }
+
+  // Delete a chapter
+  async deleteChapter(req, res) {
+    const client = await pool.connect();
+    try {
+      const { course_id, chapter_id } = req.params;
+      const user_id = req.user.userId;
+
+      // Verify instructor has access to the course
+      const courseCheck = await client.query(
+        `SELECT course_id
+         FROM course_assignments
+         WHERE course_id = $1 AND instructor_id = $2 AND is_active = true`,
+        [course_id, user_id]
+      );
+
+      if (courseCheck.rows.length === 0) {
+        return res.status(403).json({
+          error: 'You do not have permission to modify this course',
+        });
+      }
+
+      await client.query('BEGIN');
+
+      // Delete the chapter
+      await client.query(
+        `DELETE FROM course_chapters
+         WHERE chapter_id = $1 AND course_id = $2`,
+        [chapter_id, course_id]
+      );
+
+      await client.query('COMMIT');
+
+      res.status(200).json({
+        message: 'Chapter deleted successfully',
+      });
+    } catch (error) {
+      await client.query('ROLLBACK');
+      console.error('Error deleting chapter:', error);
+      handleDbError(res, error);
+    } finally {
+      client.release();
     }
   }
 }
