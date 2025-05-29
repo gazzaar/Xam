@@ -892,11 +892,11 @@ class InstructorController {
   // Get exams
   async getExams(req, res) {
     try {
-      const user_id = req.user.user_id;
+      const user_id = req.user.userId;
 
-      // Get all exams for this instructor
+      // Get all exams for this instructor by checking course assignments
       const examsResult = await pool.query(
-        `SELECT
+        `SELECT DISTINCT
           e.exam_id,
           e.exam_name,
           e.description,
@@ -905,12 +905,20 @@ class InstructorController {
           e.end_date,
           e.access_code AS exam_link_id,
           e.is_active,
-          e.created_at
+          e.created_at,
+          e.course_id,
+          e.is_randomized,
+          e.status
         FROM exams e
-        WHERE e.instructor_id = $1
+        JOIN courses c ON e.course_id = c.course_id
+        JOIN course_assignments ca ON c.course_id = ca.course_id
+        WHERE (e.created_by = $1 OR ca.instructor_id = $1)
+          AND ca.is_active = true
         ORDER BY e.created_at DESC`,
         [user_id]
       );
+
+      console.log('Exams query result:', examsResult.rows);
 
       if (examsResult.rows.length === 0) {
         return res.json([]);
@@ -937,18 +945,18 @@ class InstructorController {
           // Get question distribution
           const distributionResult = await pool.query(
             `SELECT
-            es.chapter,
-            es.num_questions AS count
-          FROM exam_specifications es
-          WHERE es.exam_id = $1`,
+              es.chapter,
+              es.num_questions AS count
+            FROM exam_specifications es
+            WHERE es.exam_id = $1`,
             [exam.exam_id]
           );
 
           // Get count of allowed students
           const studentsResult = await pool.query(
             `SELECT COUNT(*) AS student_count
-          FROM allowed_students
-          WHERE exam_id = $1`,
+            FROM allowed_students
+            WHERE exam_id = $1`,
             [exam.exam_id]
           );
 
@@ -957,12 +965,14 @@ class InstructorController {
             ...exam,
             question_references: distributionResult.rows,
             student_count: parseInt(studentsResult.rows[0].student_count) || 0,
-            // Calculate status based on dates
-            status: calculateStatus(exam.start_date, exam.end_date),
+            // Use database status if available, otherwise calculate it
+            status:
+              exam.status || calculateStatus(exam.start_date, exam.end_date),
           };
         })
       );
 
+      console.log('Formatted exams:', exams);
       res.json(exams);
     } catch (error) {
       console.error('Error fetching exams:', error);
