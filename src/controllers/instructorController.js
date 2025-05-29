@@ -1296,10 +1296,12 @@ class InstructorController {
   // Get exam preview for instructors
   async getExamPreview(req, res) {
     try {
-      const user_id = req.user.user_id;
+      const user_id = req.user.userId;
       const exam_id = req.params.id;
 
-      // First, check if the exam exists and belongs to this instructor
+      console.log('Fetching exam preview:', { exam_id, user_id });
+
+      // First, check if the exam exists and belongs to this instructor through either direct creation or course assignment
       const examResult = await pool.query(
         `SELECT
           e.exam_id,
@@ -1310,19 +1312,31 @@ class InstructorController {
           e.end_date,
           e.access_code AS exam_link_id,
           e.is_active,
-          e.created_at
+          e.created_at,
+          e.created_by,
+          e.course_id,
+          e.exam_metadata
         FROM exams e
-        WHERE e.exam_id = $1 AND e.instructor_id = $2`,
+        LEFT JOIN courses c ON e.course_id = c.course_id
+        LEFT JOIN course_assignments ca ON c.course_id = ca.course_id
+        WHERE e.exam_id = $1
+        AND (e.created_by = $2 OR ca.instructor_id = $2)
+        AND ca.is_active = true
+        LIMIT 1`,
         [exam_id, user_id]
       );
 
+      console.log('Exam query result:', examResult.rows);
+
       if (examResult.rows.length === 0) {
+        console.log('No exam found or no permission:', { exam_id, user_id });
         return res.status(404).json({
           error: 'Exam not found or you do not have permission to view it',
         });
       }
 
       const exam = examResult.rows[0];
+      console.log('Found exam:', exam);
 
       // Get question distribution
       const distributionResult = await pool.query(
@@ -1333,6 +1347,8 @@ class InstructorController {
         WHERE es.exam_id = $1`,
         [exam_id]
       );
+
+      console.log('Distribution result:', distributionResult.rows);
 
       // Get count of allowed students
       const studentsResult = await pool.query(
@@ -1365,6 +1381,8 @@ class InstructorController {
         status: calculateStatus(exam.start_date, exam.end_date),
       };
 
+      console.log('Formatted exam data:', examData);
+
       // Get a sample of questions for each chapter in the distribution
       const sampleQuestions = [];
 
@@ -1373,19 +1391,37 @@ class InstructorController {
         const chapter = spec.chapter;
         const count = Math.min(spec.count, 2); // Get at most 2 sample questions per chapter
 
-        // Get random questions from this chapter
+        console.log('Fetching questions for chapter:', { chapter, count });
+
+        // Get random questions from this chapter from the course's question banks
         const questionsResult = await pool.query(
-          `SELECT
-            q.question_id,
-            q.question_text,
-            q.question_type,
-            q.chapter
-          FROM questions q
-          WHERE q.chapter = $1 AND q.instructor_id = $2
-          ORDER BY RANDOM()
+          `WITH RandomQuestions AS (
+            SELECT DISTINCT ON (q.question_id)
+              q.question_id,
+              q.question_text,
+              q.question_type,
+              q.chapter,
+              random() as rand
+            FROM questions q
+            JOIN question_banks qb ON q.question_bank_id = qb.question_bank_id
+            WHERE q.chapter = $1
+            AND qb.course_id = $2
+          )
+          SELECT
+            question_id,
+            question_text,
+            question_type,
+            chapter
+          FROM RandomQuestions
+          ORDER BY rand
           LIMIT $3`,
-          [chapter, user_id, count]
+          [chapter, exam.course_id, count]
         );
+
+        console.log('Questions for chapter:', {
+          chapter,
+          questions: questionsResult.rows,
+        });
 
         // For each question, get its options
         for (const question of questionsResult.rows) {
@@ -1396,7 +1432,8 @@ class InstructorController {
               option_text,
               is_correct
             FROM question_options
-            WHERE question_id = $1`,
+            WHERE question_id = $1
+            ORDER BY option_id`,
             [question.question_id]
           );
 
@@ -1424,6 +1461,8 @@ class InstructorController {
           sampleQuestions.push(question);
         }
       }
+
+      console.log('Sample questions:', sampleQuestions);
 
       // Return the exam data and sample questions
       res.json({
