@@ -1321,9 +1321,226 @@ class InstructorController {
     res.status(501).json({ message: 'Not implemented yet' });
   }
 
-  // Get dashboard stats (placeholder)
+  // Get dashboard stats
   async getDashboardStats(req, res) {
-    res.status(501).json({ message: 'Not implemented yet' });
+    const client = await pool.connect();
+    try {
+      const user_id = req.user.userId;
+      const now = new Date();
+      const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const tomorrow = new Date(today);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+
+      // Get active exams count (exams currently in progress)
+      const activeExamsResult = await client.query(
+        `SELECT COUNT(*) as count
+         FROM exams e
+         JOIN courses c ON e.course_id = c.course_id
+         JOIN course_assignments ca ON c.course_id = ca.course_id
+         WHERE ca.instructor_id = $1
+         AND e.start_date <= NOW()
+         AND e.end_date >= NOW()`,
+        [user_id]
+      );
+
+      // Get total exams count
+      const totalExamsResult = await client.query(
+        `SELECT COUNT(*) as count
+         FROM exams e
+         JOIN courses c ON e.course_id = c.course_id
+         JOIN course_assignments ca ON c.course_id = ca.course_id
+         WHERE ca.instructor_id = $1`,
+        [user_id]
+      );
+
+      // Get students taking exams today
+      const studentsTodayResult = await client.query(
+        `SELECT COUNT(DISTINCT se.student_id) as count
+         FROM student_exams se
+         JOIN exams e ON se.exam_id = e.exam_id
+         JOIN courses c ON e.course_id = c.course_id
+         JOIN course_assignments ca ON c.course_id = ca.course_id
+         WHERE ca.instructor_id = $1
+         AND se.start_time >= $2
+         AND se.start_time < $3`,
+        [user_id, today, tomorrow]
+      );
+
+      // Get average score across all completed exams
+      const avgScoreResult = await client.query(
+        `SELECT COALESCE(AVG(se.score), 0) as avg_score
+         FROM student_exams se
+         JOIN exams e ON se.exam_id = e.exam_id
+         JOIN courses c ON e.course_id = c.course_id
+         JOIN course_assignments ca ON c.course_id = ca.course_id
+         WHERE ca.instructor_id = $1
+         AND se.status = 'completed'`,
+        [user_id]
+      );
+
+      // Get grade distribution for all exams
+      const gradeDistResult = await client.query(
+        `WITH grade_ranges AS (
+           SELECT
+             CASE
+               WHEN se.score >= 90 THEN 'A (90-100)'
+               WHEN se.score >= 80 THEN 'B (80-89)'
+               WHEN se.score >= 70 THEN 'C (70-79)'
+               WHEN se.score >= 60 THEN 'D (60-69)'
+               ELSE 'F (0-59)'
+             END as grade_range,
+             COUNT(*) as count
+           FROM student_exams se
+           JOIN exams e ON se.exam_id = e.exam_id
+           JOIN courses c ON e.course_id = c.course_id
+           JOIN course_assignments ca ON c.course_id = ca.course_id
+           WHERE ca.instructor_id = $1
+           AND se.status = 'completed'
+           GROUP BY
+             CASE
+               WHEN se.score >= 90 THEN 'A (90-100)'
+               WHEN se.score >= 80 THEN 'B (80-89)'
+               WHEN se.score >= 70 THEN 'C (70-79)'
+               WHEN se.score >= 60 THEN 'D (60-69)'
+               ELSE 'F (0-59)'
+             END
+           ORDER BY grade_range
+         )
+         SELECT
+           COALESCE(array_agg(grade_range), ARRAY[]::text[]) as ranges,
+           COALESCE(array_agg(count::integer), ARRAY[]::integer[]) as counts
+         FROM grade_ranges`,
+        [user_id]
+      );
+
+      // Get chapter performance for all exams
+      const chapterPerfResult = await client.query(
+        `WITH chapter_stats AS (
+           SELECT
+             q.chapter,
+             COUNT(CASE WHEN seq.is_correct THEN 1 END) as correct_count,
+             COUNT(*) as total_count
+           FROM student_exam_questions seq
+           JOIN questions q ON seq.question_id = q.question_id
+           JOIN student_exams se ON seq.student_exam_id = se.student_exam_id
+           JOIN exams e ON se.exam_id = e.exam_id
+           JOIN courses c ON e.course_id = c.course_id
+           JOIN course_assignments ca ON c.course_id = ca.course_id
+           WHERE ca.instructor_id = $1
+           AND se.status = 'completed'
+           AND q.chapter IS NOT NULL
+           GROUP BY q.chapter
+           ORDER BY q.chapter
+         )
+         SELECT
+           COALESCE(array_agg(chapter), ARRAY[]::text[]) as chapters,
+           COALESCE(array_agg((correct_count * 100.0 / NULLIF(total_count, 0))::numeric(5,2)), ARRAY[]::numeric[]) as correct_percentages,
+           COALESCE(array_agg(((total_count - correct_count) * 100.0 / NULLIF(total_count, 0))::numeric(5,2)), ARRAY[]::numeric[]) as incorrect_percentages
+         FROM chapter_stats`,
+        [user_id]
+      );
+
+      // Get per-exam statistics
+      const examStatsResult = await client.query(
+        `SELECT
+          e.exam_id,
+          e.exam_name,
+          COUNT(DISTINCT se.student_id) as total_students,
+          COALESCE(AVG(se.score), 0) as avg_score,
+          (
+            SELECT json_build_object(
+              'ranges', COALESCE(array_agg(grade_range), ARRAY[]::text[]),
+              'counts', COALESCE(array_agg(count::integer), ARRAY[]::integer[])
+            )
+            FROM (
+              SELECT
+                CASE
+                  WHEN se2.score >= 90 THEN 'A (90-100)'
+                  WHEN se2.score >= 80 THEN 'B (80-89)'
+                  WHEN se2.score >= 70 THEN 'C (70-79)'
+                  WHEN se2.score >= 60 THEN 'D (60-69)'
+                  ELSE 'F (0-59)'
+                END as grade_range,
+                COUNT(*) as count
+              FROM student_exams se2
+              WHERE se2.exam_id = e.exam_id
+              AND se2.status = 'completed'
+              GROUP BY grade_range
+              ORDER BY grade_range
+            ) grades
+          ) as grade_distribution,
+          (
+            SELECT json_build_object(
+              'chapters', COALESCE(array_agg(chapter), ARRAY[]::text[]),
+              'correct_percentages', COALESCE(array_agg((correct_count * 100.0 / NULLIF(total_count, 0))::numeric(5,2)), ARRAY[]::numeric[]),
+              'incorrect_percentages', COALESCE(array_agg(((total_count - correct_count) * 100.0 / NULLIF(total_count, 0))::numeric(5,2)), ARRAY[]::numeric[])
+            )
+            FROM (
+              SELECT
+                q.chapter,
+                COUNT(CASE WHEN seq.is_correct THEN 1 END) as correct_count,
+                COUNT(*) as total_count
+              FROM student_exam_questions seq
+              JOIN questions q ON seq.question_id = q.question_id
+              JOIN student_exams se2 ON seq.student_exam_id = se2.student_exam_id
+              WHERE se2.exam_id = e.exam_id
+              AND se2.status = 'completed'
+              AND q.chapter IS NOT NULL
+              GROUP BY q.chapter
+              ORDER BY q.chapter
+            ) chapters
+          ) as chapter_performance
+        FROM exams e
+        JOIN courses c ON e.course_id = c.course_id
+        JOIN course_assignments ca ON c.course_id = ca.course_id
+        LEFT JOIN student_exams se ON e.exam_id = se.exam_id
+        WHERE ca.instructor_id = $1
+        GROUP BY e.exam_id, e.exam_name
+        ORDER BY e.created_at DESC`,
+        [user_id]
+      );
+
+      // Format response
+      const response = {
+        active_exams_count: parseInt(activeExamsResult.rows[0].count) || 0,
+        exams_count: parseInt(totalExamsResult.rows[0].count) || 0,
+        students_today: parseInt(studentsTodayResult.rows[0].count) || 0,
+        average_score: parseFloat(avgScoreResult.rows[0].avg_score) || 0,
+        grade_distribution: {
+          ranges: gradeDistResult.rows[0]?.ranges || [],
+          counts: gradeDistResult.rows[0]?.counts || [],
+        },
+        chapter_performance: {
+          chapters: chapterPerfResult.rows[0]?.chapters || [],
+          correct_percentages:
+            chapterPerfResult.rows[0]?.correct_percentages || [],
+          incorrect_percentages:
+            chapterPerfResult.rows[0]?.incorrect_percentages || [],
+        },
+        exam_stats: examStatsResult.rows.map((exam) => ({
+          exam_id: exam.exam_id,
+          exam_name: exam.exam_name,
+          total_students: parseInt(exam.total_students) || 0,
+          average_score: parseFloat(exam.avg_score) || 0,
+          grade_distribution: exam.grade_distribution || {
+            ranges: [],
+            counts: [],
+          },
+          chapter_performance: exam.chapter_performance || {
+            chapters: [],
+            correct_percentages: [],
+            incorrect_percentages: [],
+          },
+        })),
+      };
+
+      res.json(response);
+    } catch (error) {
+      console.error('Error fetching dashboard stats:', error);
+      handleDbError(res, error);
+    } finally {
+      client.release();
+    }
   }
 
   // Update exam
