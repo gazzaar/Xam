@@ -562,9 +562,9 @@ const adminController = {
     try {
       await client.query('BEGIN');
 
-      console.log('Removing instructor assignment...');
-      console.log('Course ID:', courseId);
-      console.log('Instructor ID:', instructorId);
+      
+      
+      
 
       // Check current assignments
       const currentAssignments = await client.query(
@@ -572,7 +572,7 @@ const adminController = {
          WHERE course_id = $1 AND instructor_id = $2`,
         [courseId, instructorId]
       );
-      console.log('Current assignments:', currentAssignments.rows);
+      
 
       // Delete all assignments for this instructor-course pair
       const deleteResult = await client.query(
@@ -581,7 +581,7 @@ const adminController = {
          RETURNING *`,
         [courseId, instructorId]
       );
-      console.log('Deleted assignments:', deleteResult.rows);
+      
 
       if (deleteResult.rows.length === 0) {
         await client.query('ROLLBACK');
@@ -592,7 +592,7 @@ const adminController = {
       }
 
       await client.query('COMMIT');
-      console.log('Successfully removed instructor assignment');
+      
 
       res.status(200).json({
         success: true,

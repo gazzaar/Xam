@@ -25,7 +25,7 @@ function setStudent(req, res) {
 
 async function getAllStudents(req, res) {
   const studentsNames = await db.getAll();
-  console.log('studentsNames:', studentsNames);
+  
   res.send(
     studentsNames
       .map((studentName) => studentName.student_first_name)
