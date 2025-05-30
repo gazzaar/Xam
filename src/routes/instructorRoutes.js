@@ -273,4 +273,12 @@ router.post(
   instructorController.createExamWithStudents
 );
 
+// Add migration endpoint
+router.post(
+  '/migrate-images',
+  authMiddleware.verifyToken,
+  authMiddleware.isInstructor,
+  instructorController.migrateExternalImages
+);
+
 module.exports = router;

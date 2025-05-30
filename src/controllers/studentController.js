@@ -236,6 +236,7 @@ class StudentController {
               q.question_type,
               q.points,
               q.chapter,
+              q.image_url,
               seq.question_order,
               CASE
                 WHEN q.question_type IN ('multiple-choice', 'true/false') THEN
@@ -251,7 +252,7 @@ class StudentController {
             JOIN questions q ON seq.question_id = q.question_id
             LEFT JOIN question_options qo ON q.question_id = qo.question_id
             WHERE seq.student_exam_id = $1
-            GROUP BY q.question_id, q.question_text, q.question_type, q.points, q.chapter, seq.question_order
+            GROUP BY q.question_id, q.question_text, q.question_type, q.points, q.chapter, q.image_url, seq.question_order
             ORDER BY seq.question_order`,
             [examSession.student_exam_id]
           );
@@ -290,6 +291,7 @@ class StudentController {
             q.question_type,
             q.points,
             q.chapter,
+            q.image_url,
             CASE
               WHEN q.question_type IN ('multiple-choice', 'true/false') THEN
                 json_agg(
@@ -304,7 +306,7 @@ class StudentController {
           LEFT JOIN question_options qo ON q.question_id = qo.question_id
           WHERE q.question_bank_id = $1
           AND q.chapter = $2
-          GROUP BY q.question_id, q.question_text, q.question_type, q.points, q.chapter
+          GROUP BY q.question_id, q.question_text, q.question_type, q.points, q.chapter, q.image_url
           ORDER BY RANDOM()
           LIMIT $3`,
           [examMetadata.question_bank_id, spec.chapter, spec.num_questions]
@@ -336,6 +338,20 @@ class StudentController {
       await client.query('COMMIT');
 
       // Return exam data and questions
+      const formattedQuestions = questions.map((q, index) => ({
+        ...q,
+        questionNumber: index + 1,
+      }));
+
+      console.log(
+        'Sending questions to student:',
+        formattedQuestions.map((q) => ({
+          questionId: q.question_id,
+          hasImage: !!q.image_url,
+          imageUrl: q.image_url,
+        }))
+      );
+
       res.json({
         exam: {
           examId: examSession.exam_id,
@@ -343,10 +359,7 @@ class StudentController {
           duration: examSession.time_limit_minutes,
           startTime: examSession.start_time,
         },
-        questions: questions.map((q, index) => ({
-          ...q,
-          questionNumber: index + 1,
-        })),
+        questions: formattedQuestions,
       });
     } catch (error) {
       await client.query('ROLLBACK');

@@ -6,6 +6,34 @@ const pool = require('../db/pool');
 const csv = require('csv-parse');
 const { promisify } = require('util');
 const { v4: uuidv4 } = require('uuid');
+const axios = require('axios');
+const https = require('https');
+
+// Helper function to download and save external images
+async function downloadAndSaveImage(imageUrl) {
+  try {
+    // Generate a unique filename
+    const fileExtension = path.extname(imageUrl).split('?')[0] || '.jpg';
+    const filename = `${uuidv4()}${fileExtension}`;
+    const imagePath = path.join(__dirname, '..', 'uploads', 'images', filename);
+
+    // Download the image with a 5-second timeout
+    const response = await axios.get(imageUrl, {
+      responseType: 'arraybuffer',
+      timeout: 5000,
+      httpsAgent: new https.Agent({ rejectUnauthorized: false }),
+    });
+
+    // Save the image
+    await fs.promises.writeFile(imagePath, response.data);
+
+    // Return the relative path to be stored in the database
+    return `/uploads/images/${filename}`;
+  } catch (error) {
+    console.error('Error downloading image:', error);
+    return null;
+  }
+}
 
 // Configure multer for CSV file uploads
 const storage = multer.memoryStorage();
@@ -405,6 +433,9 @@ class InstructorController {
           });
         }
 
+        // Store the image URL directly without any processing
+        const imageUrl = question.image_url || null;
+
         const questionResult = await client.query(
           `INSERT INTO questions
            (question_text, question_type, points, image_url, chapter, question_bank_id, created_by)
@@ -414,7 +445,7 @@ class InstructorController {
             question.question_text,
             question.question_type,
             points,
-            question.image_url,
+            imageUrl,
             question.chapter,
             question_bank_id,
             user_id,
@@ -481,7 +512,8 @@ class InstructorController {
            q.*,
            u.first_name as created_by_first_name,
            u.last_name as created_by_last_name,
-           u.username as created_by_username
+           u.username as created_by_username,
+           q.image_url
          FROM questions q
          LEFT JOIN users u ON q.created_by = u.user_id
          WHERE q.question_bank_id = $1
@@ -752,6 +784,18 @@ class InstructorController {
         });
       }
 
+      // Handle image URL if present and it's a new external URL
+      let finalImageUrl = questionData.image_url;
+      if (finalImageUrl && finalImageUrl.startsWith('http')) {
+        finalImageUrl = await downloadAndSaveImage(finalImageUrl);
+        if (!finalImageUrl) {
+          await client.query('ROLLBACK');
+          return res.status(400).json({
+            error: 'Failed to download and save the image',
+          });
+        }
+      }
+
       // Validate points
       const updatedPoints = parseInt(questionData.points) || 1;
       if (updatedPoints < 1 || updatedPoints > 15) {
@@ -775,7 +819,7 @@ class InstructorController {
           questionData.question_text || '',
           questionData.question_type || 'multiple-choice',
           updatedPoints,
-          questionData.image_url || '',
+          finalImageUrl,
           questionData.chapter || '',
           question_id,
           question_bank_id,
@@ -1784,6 +1828,7 @@ class InstructorController {
               q.question_text,
               q.question_type,
               q.chapter,
+              q.image_url,
               random() as rand
             FROM questions q
             JOIN question_banks qb ON q.question_bank_id = qb.question_bank_id
@@ -1794,7 +1839,8 @@ class InstructorController {
             question_id,
             question_text,
             question_type,
-            chapter
+            chapter,
+            image_url
           FROM RandomQuestions
           ORDER BY rand
           LIMIT $3`,
@@ -2181,6 +2227,66 @@ class InstructorController {
         error: 'Failed to create exam',
         details: error.message,
       });
+    } finally {
+      client.release();
+    }
+  }
+
+  // Migrate external images to local storage
+  async migrateExternalImages(req, res) {
+    const client = await pool.connect();
+    try {
+      // Get all questions with external image URLs
+      const questionsResult = await client.query(
+        `SELECT question_id, image_url
+         FROM questions
+         WHERE image_url LIKE 'http%'`
+      );
+
+      console.log(
+        `Found ${questionsResult.rows.length} questions with external images`
+      );
+
+      let migratedCount = 0;
+      let failedCount = 0;
+
+      await client.query('BEGIN');
+
+      for (const question of questionsResult.rows) {
+        try {
+          const localImageUrl = await downloadAndSaveImage(question.image_url);
+          if (localImageUrl) {
+            await client.query(
+              `UPDATE questions
+               SET image_url = $1
+               WHERE question_id = $2`,
+              [localImageUrl, question.question_id]
+            );
+            migratedCount++;
+          } else {
+            failedCount++;
+          }
+        } catch (error) {
+          console.error(
+            `Failed to migrate image for question ${question.question_id}:`,
+            error
+          );
+          failedCount++;
+        }
+      }
+
+      await client.query('COMMIT');
+
+      res.json({
+        message: 'Image migration completed',
+        total: questionsResult.rows.length,
+        migrated: migratedCount,
+        failed: failedCount,
+      });
+    } catch (error) {
+      await client.query('ROLLBACK');
+      console.error('Error during image migration:', error);
+      handleDbError(res, error);
     } finally {
       client.release();
     }
