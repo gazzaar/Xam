@@ -42,24 +42,45 @@ class StudentController {
 
       const exam = examResult.rows[0];
 
-      // Check if exam is within its time window
-      const now = new Date();
-      const startDate = new Date(exam.start_date);
-      const endDate = new Date(exam.end_date);
+      // Check if student has already attempted the exam
+      const attemptResult = await client.query(
+        `SELECT *
+         FROM student_exams
+         WHERE exam_id = $1 AND student_id = $2`,
+        [exam.exam_id, studentId]
+      );
 
-      if (now < startDate) {
+      if (attemptResult.rows.length > 0) {
+        const now = new Date();
+        if (now > new Date(exam.end_date)) {
+          // Allow stats access
+          return res.status(200).json({
+            success: true,
+            showStats: true,
+            examId: exam.exam_id,
+            studentId: studentId,
+          });
+        }
         return res.status(403).json({
-          error: 'Exam not started',
-          details: 'This exam has not started yet',
-          startTime: startDate,
+          error: 'Already attempted',
+          details: 'You have already attempted this exam',
         });
       }
 
-      if (now > endDate) {
+      // Check if exam is within its time window
+      const now = new Date();
+      if (now < new Date(exam.start_date)) {
+        return res.status(403).json({
+          error: 'Exam not started',
+          details: 'This exam has not started yet',
+          startTime: exam.start_date,
+        });
+      }
+      if (now > new Date(exam.end_date)) {
         return res.status(403).json({
           error: 'Exam ended',
           details: 'This exam has already ended',
-          endTime: endDate,
+          endTime: exam.end_date,
         });
       }
 
@@ -77,21 +98,6 @@ class StudentController {
         return res.status(403).json({
           error: 'Access denied',
           details: 'Student ID or email not found in allowed list',
-        });
-      }
-
-      // Check if student has already attempted the exam
-      const attemptResult = await client.query(
-        `SELECT *
-         FROM student_exams
-         WHERE exam_id = $1 AND student_id = $2`,
-        [exam.exam_id, studentId]
-      );
-
-      if (attemptResult.rows.length > 0) {
-        return res.status(403).json({
-          error: 'Already attempted',
-          details: 'You have already attempted this exam',
         });
       }
 
@@ -534,6 +540,123 @@ class StudentController {
         error: 'Server error',
         details: 'An error occurred while submitting the exam',
       });
+    } finally {
+      client.release();
+    }
+  }
+
+  // Get exam stats for student (only after exam ends)
+  async getExamStats(req, res) {
+    const client = await pool.connect();
+    try {
+      const { examId } = req.params; // This is the exam_link_id
+      const studentId = req.query.studentId;
+
+      if (!studentId) {
+        return res.status(400).json({
+          available: false,
+          error: 'Missing studentId',
+        });
+      }
+
+      // Get exam info using exam_link_id
+      const examResult = await client.query(
+        `SELECT exam_id, end_date FROM exams WHERE exam_link_id = $1`,
+        [examId]
+      );
+
+      if (examResult.rows.length === 0) {
+        return res.status(404).json({
+          available: false,
+          error: 'Exam not found',
+        });
+      }
+
+      const { exam_id, end_date } = examResult.rows[0];
+      const now = new Date();
+      if (now < new Date(end_date)) {
+        return res.json({ available: false });
+      }
+
+      // Get student's own exam session
+      const studentExamResult = await client.query(
+        `SELECT student_exam_id, score, start_time, end_time
+         FROM student_exams
+         WHERE exam_id = $1 AND student_id::text = $2::text`,
+        [exam_id, studentId]
+      );
+
+      if (studentExamResult.rows.length === 0) {
+        return res.status(404).json({
+          available: false,
+          error: 'Student exam not found',
+        });
+      }
+
+      const studentExam = studentExamResult.rows[0];
+      const studentDuration =
+        studentExam.end_time && studentExam.start_time
+          ? (new Date(studentExam.end_time) -
+              new Date(studentExam.start_time)) /
+            1000
+          : null;
+
+      // Get class average score and duration
+      const classResult = await client.query(
+        `SELECT
+           AVG(score) as avg_score,
+           AVG(EXTRACT(EPOCH FROM (end_time - start_time))) as avg_duration
+         FROM student_exams
+         WHERE exam_id = $1
+           AND score IS NOT NULL
+           AND end_time IS NOT NULL
+           AND start_time IS NOT NULL`,
+        [exam_id]
+      );
+
+      const avgScore = parseFloat(classResult.rows[0].avg_score) || 0;
+      const avgDuration = parseFloat(classResult.rows[0].avg_duration) || 0;
+
+      // Get chapter performance for this student
+      const chapterPerfResult = await client.query(
+        `SELECT
+           q.chapter,
+           COUNT(*) FILTER (WHERE seq.is_correct = true) as correct,
+           COUNT(*) FILTER (WHERE seq.is_correct = false OR seq.is_correct IS NULL) as incorrect
+         FROM student_exam_questions seq
+         JOIN questions q ON seq.question_id = q.question_id
+         WHERE seq.student_exam_id = $1
+         GROUP BY q.chapter
+         ORDER BY q.chapter`,
+        [studentExam.student_exam_id]
+      );
+
+      const perChapter = {};
+      const chapters = [];
+      chapterPerfResult.rows.forEach((row) => {
+        perChapter[row.chapter] = {
+          correct: parseInt(row.correct),
+          incorrect: parseInt(row.incorrect),
+        };
+        chapters.push(row.chapter);
+      });
+
+      res.json({
+        available: true,
+        student: {
+          score: parseFloat(studentExam.score) || 0,
+          duration: studentDuration,
+          per_chapter: perChapter,
+        },
+        class: {
+          avg_score: avgScore,
+          avg_duration: avgDuration,
+        },
+        chapters,
+      });
+    } catch (error) {
+      console.error('Error getting student exam stats:', error);
+      res.status(500).json({ available: false, error: 'Server error' });
     } finally {
       client.release();
     }

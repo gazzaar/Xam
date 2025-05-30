@@ -14,4 +14,7 @@ router.post('/exam/:examId/answer', studentController.submitAnswer);
 // Route for submitting the exam
 router.post('/exam/:examId/submit', studentController.submitExam);
 
+// Student exam stats (only after exam ends)
+router.get('/exam/:examId/stats', studentController.getExamStats);
+
 module.exports = router;
