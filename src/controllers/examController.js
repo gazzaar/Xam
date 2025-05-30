@@ -1,5 +1,6 @@
 const { Client } = require('pg');
 const dotenv = require('dotenv');
+const pool = require('../db/pool');
 
 dotenv.config();
 
@@ -12,20 +13,26 @@ const client = new Client({
 
 client.connect();
 
+// Helper function to handle database errors
+const handleDbError = (res, error) => {
+  console.error('Database error:', error);
+  res.status(500).json({ error: 'Database error', details: error.message });
+};
+
 const examController = {
   // Validate student access to exam
   validateAccess: async (req, res) => {
-    const { access_code, uni_id } = req.body;
+    const { exam_link_id, student_id } = req.body;
 
     try {
       // Get exam details
       const examResult = await client.query(
         `SELECT e.*,
-                    (SELECT COUNT(*) FROM exam_attempts ea
-                     WHERE ea.exam_id = e.exam_id AND ea.uni_id = $1) as attempt_count
-                FROM exams e
-                WHERE e.access_code = $2 AND e.is_active = true`,
-        [uni_id, access_code]
+          (SELECT COUNT(*) FROM exam_attempts ea
+           WHERE ea.exam_id = e.exam_id AND ea.student_id = $1) as attempt_count
+        FROM exams e
+        WHERE e.exam_link_id = $2 AND e.is_active = true`,
+        [student_id, exam_link_id]
       );
 
       if (examResult.rows.length === 0) {
@@ -48,8 +55,8 @@ const examController = {
 
       // Check if student is in allowed list
       const allowedResult = await client.query(
-        'SELECT * FROM allowed_students WHERE exam_id = $1 AND uni_id = $2',
-        [exam.exam_id, uni_id]
+        'SELECT * FROM allowed_students WHERE exam_id = $1 AND student_id = $2',
+        [exam.exam_id, student_id]
       );
 
       if (allowedResult.rows.length === 0) {
@@ -76,12 +83,7 @@ const examController = {
         },
       });
     } catch (error) {
-      console.error('Error validating exam access:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Error validating exam access',
-        error: error.message,
-      });
+      handleDbError(res, error);
     }
   },
 

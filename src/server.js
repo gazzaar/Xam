@@ -10,6 +10,7 @@ const authRoutes = require('./routes/authRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const instructorRoutes = require('./routes/instructorRoutes');
 const examRoutes = require('./routes/examRoutes');
+const studentRoutes = require('./routes/studentRoutes');
 
 // Load environment variables
 dotenv.config();
@@ -34,6 +35,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/instructor', instructorRoutes);
 app.use('/api/exam', examRoutes);
+app.use('/api/student', studentRoutes);
 
 // Keep the index route last
 // app.use('/', indexRouter);

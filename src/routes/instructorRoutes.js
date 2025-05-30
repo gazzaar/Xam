@@ -2,9 +2,20 @@ const express = require('express');
 const router = express.Router();
 const instructorController = require('../controllers/instructorController');
 const authMiddleware = require('../middleware/authMiddleware');
+const multer = require('multer');
 
 // Configure multer for file uploads
-// const upload = multer({ dest: 'uploads/' });
+const storage = multer.memoryStorage();
+const upload = multer({
+  storage,
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype !== 'text/csv') {
+      return cb(new Error('Only CSV files are allowed'));
+    }
+    cb(null, true);
+  },
+});
 
 // Exam Generation
 router.post(
@@ -124,14 +135,14 @@ router.post(
   instructorController.addQuestions
 );
 
-// Exam Student Management (commented out for now)
-// router.post(
-//   '/exams/:exam_id/students/upload',
-//   authMiddleware.authenticateToken,
-//   authMiddleware.isInstructor,
-//   upload.single('file'),
-//   instructorController.uploadAllowedStudents
-// );
+// Exam Student Management
+router.post(
+  '/exams/:exam_id/students/upload',
+  authMiddleware.verifyToken,
+  authMiddleware.isInstructor,
+  upload.single('students'),
+  instructorController.uploadAllowedStudents
+);
 
 /**
  * @route GET /api/instructor/exams/:exam_id/results
@@ -207,6 +218,14 @@ router.delete(
   instructorController.deleteQuestionBank
 );
 
+// Question Bank Statistics
+router.get(
+  '/question-banks/:bank_id/stats',
+  authMiddleware.verifyToken,
+  authMiddleware.isInstructor,
+  instructorController.getQuestionBankStats
+);
+
 // Question Bank Questions
 router.get(
   '/question-banks/:question_bank_id/questions',
@@ -236,13 +255,22 @@ router.put(
   instructorController.updateQuestionInQuestionBank
 );
 
-// Commenting out file upload endpoint for now
-// router.post(
-//   '/exams/:exam_id/students/upload',
-//   authMiddleware.authenticateToken,
-//   authMiddleware.isInstructor,
-//   upload.single('students'),
-//   instructorController.uploadAllowedStudents
-// );
+// Validate student file
+router.post(
+  '/validate-student-file',
+  authMiddleware.verifyToken,
+  authMiddleware.isInstructor,
+  upload.single('file'),
+  instructorController.validateStudentFile
+);
+
+// Create exam with students in a single transaction
+router.post(
+  '/exams/create-with-students',
+  authMiddleware.verifyToken,
+  authMiddleware.isInstructor,
+  upload.single('students'),
+  instructorController.createExamWithStudents
+);
 
 module.exports = router;

@@ -3,6 +3,9 @@ const { parse } = require('csv-parse/sync');
 const path = require('path');
 const multer = require('multer');
 const pool = require('../db/pool');
+const csv = require('csv-parse');
+const { promisify } = require('util');
+const { v4: uuidv4 } = require('uuid');
 
 // Configure multer for CSV file uploads
 const storage = multer.memoryStorage();
@@ -19,12 +22,54 @@ const upload = multer({
   limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
   fileFilter,
 });
-const { v4: uuidv4 } = require('uuid');
 
 // Helper function to handle database errors
 const handleDbError = (res, error) => {
   console.error('Database error:', error);
   res.status(500).json({ error: 'Database error', details: error.message });
+};
+
+// Helper function to validate student CSV data
+const validateStudentData = (data) => {
+  const errors = [];
+  const validRows = [];
+  const seenIds = new Set();
+  const seenEmails = new Set();
+
+  data.forEach((row, index) => {
+    const lineNumber = index + 2; // +2 because index starts at 0 and we skip header row
+
+    // Handle both CSV and TSV formats
+    const student_id = row.student_id?.trim();
+    const name = row.student_name?.trim();
+    const email = row.student_email?.trim();
+
+    if (!student_id || !name || !email) {
+      errors.push(`Line ${lineNumber}: Missing required fields`);
+      return;
+    }
+
+    if (seenIds.has(student_id)) {
+      errors.push(`Line ${lineNumber}: Duplicate student ID ${student_id}`);
+      return;
+    }
+
+    if (seenEmails.has(email)) {
+      errors.push(`Line ${lineNumber}: Duplicate email ${email}`);
+      return;
+    }
+
+    if (!email.includes('@')) {
+      errors.push(`Line ${lineNumber}: Invalid email format`);
+      return;
+    }
+
+    seenIds.add(student_id);
+    seenEmails.add(email);
+    validRows.push({ student_id, name, email });
+  });
+
+  return { errors, validRows };
 };
 
 class InstructorController {
@@ -232,14 +277,17 @@ class InstructorController {
       const result = await pool.query(
         `SELECT qb.question_bank_id, qb.bank_name, qb.description,
                 qb.created_by, qb.created_at,
-                u.username as creator_name
+                u.username as creator_name,
+                COUNT(q.question_id) as total_questions
          FROM question_banks qb
          JOIN courses c ON qb.course_id = c.course_id
          JOIN course_assignments ca ON c.course_id = ca.course_id
          LEFT JOIN users u ON qb.created_by = u.user_id
+         LEFT JOIN questions q ON qb.question_bank_id = q.question_bank_id
          WHERE c.course_id = $1
          AND ca.instructor_id = $2
          AND ca.is_active = true
+         GROUP BY qb.question_bank_id, qb.bank_name, qb.description, qb.created_by, qb.created_at, u.username
          ORDER BY qb.created_at DESC`,
         [course_id, user_id]
       );
@@ -248,9 +296,70 @@ class InstructorController {
       const questionBanks = result.rows.map((bank) => ({
         ...bank,
         is_owner: bank.created_by === user_id,
+        total_questions: parseInt(bank.total_questions) || 0,
       }));
 
       res.json(questionBanks);
+    } catch (error) {
+      handleDbError(res, error);
+    }
+  }
+
+  // Get question bank statistics
+  async getQuestionBankStats(req, res) {
+    try {
+      const user_id = req.user.userId;
+      const bank_id = req.params.bank_id;
+
+      // First verify access to the question bank
+      const accessCheck = await pool.query(
+        `SELECT qb.question_bank_id
+         FROM question_banks qb
+         JOIN courses c ON qb.course_id = c.course_id
+         JOIN course_assignments ca ON c.course_id = ca.course_id
+         WHERE qb.question_bank_id = $1
+         AND ca.instructor_id = $2
+         AND ca.is_active = true`,
+        [bank_id, user_id]
+      );
+
+      if (accessCheck.rows.length === 0) {
+        return res.status(403).json({
+          error: 'You do not have permission to access this question bank',
+        });
+      }
+
+      // Get total questions count
+      const totalResult = await pool.query(
+        `SELECT COUNT(*) as total
+         FROM questions
+         WHERE question_bank_id = $1`,
+        [bank_id]
+      );
+
+      // Get questions count by chapter
+      const chapterResult = await pool.query(
+        `SELECT
+           chapter,
+           COUNT(*) as count
+         FROM questions
+         WHERE question_bank_id = $1
+         GROUP BY chapter
+         ORDER BY chapter`,
+        [bank_id]
+      );
+
+      const response = {
+        totalQuestions: parseInt(totalResult.rows[0].total),
+        chapterStats: chapterResult.rows.reduce((acc, row) => {
+          acc[row.chapter] = {
+            count: parseInt(row.count),
+          };
+          return acc;
+        }, {}),
+      };
+
+      res.json(response);
     } catch (error) {
       handleDbError(res, error);
     }
@@ -707,7 +816,7 @@ class InstructorController {
   async createExam(req, res) {
     const client = await pool.connect();
     try {
-      const user_id = req.user.user_id;
+      const userId = req.user.userId;
       const {
         exam_name,
         description,
@@ -723,8 +832,37 @@ class InstructorController {
       } = req.body;
 
       // Validate required fields
-      if (!exam_name || !start_date || !end_date || !duration) {
+      if (!exam_name || !start_date || !end_date || !duration || !course_id) {
         return res.status(400).json({ error: 'Missing required fields' });
+      }
+
+      // Validate dates
+      const startDateTime = new Date(start_date);
+      const endDateTime = new Date(end_date);
+      const now = new Date();
+
+      if (isNaN(startDateTime.getTime()) || isNaN(endDateTime.getTime())) {
+        return res.status(400).json({ error: 'Invalid date format' });
+      }
+
+      if (startDateTime < now) {
+        return res
+          .status(400)
+          .json({ error: 'Start date cannot be in the past' });
+      }
+
+      if (endDateTime <= startDateTime) {
+        return res
+          .status(400)
+          .json({ error: 'End date must be after start date' });
+      }
+
+      // Validate duration against time range
+      const timeDiffMinutes = (endDateTime - startDateTime) / (1000 * 60);
+      if (duration > timeDiffMinutes) {
+        return res.status(400).json({
+          error: `Duration (${duration} minutes) exceeds available time (${Math.floor(timeDiffMinutes)} minutes)`,
+        });
       }
 
       // Validate chapter distribution
@@ -736,13 +874,49 @@ class InstructorController {
         return res.status(400).json({ error: 'Invalid chapter distribution' });
       }
 
-      // Generate a unique access code using UUID (10 characters)
-      const accessCode = uuidv4().replace(/-/g, '').substring(0, 10);
+      const totalDistributedQuestions = chapterDistribution.reduce(
+        (sum, item) => sum + (item.count || 0),
+        0
+      );
+
+      if (totalDistributedQuestions !== total_questions) {
+        return res.status(400).json({
+          error:
+            'Total questions in chapter distribution must match total questions specified',
+        });
+      }
+
+      // Validate difficulty distribution
+      if (
+        !difficultyDistribution ||
+        typeof difficultyDistribution !== 'object' ||
+        !('easy' in difficultyDistribution) ||
+        !('medium' in difficultyDistribution) ||
+        !('hard' in difficultyDistribution)
+      ) {
+        return res
+          .status(400)
+          .json({ error: 'Invalid difficulty distribution' });
+      }
+
+      const totalDifficulty =
+        difficultyDistribution.easy +
+        difficultyDistribution.medium +
+        difficultyDistribution.hard;
+
+      if (totalDifficulty !== 100) {
+        return res
+          .status(400)
+          .json({ error: 'Difficulty distribution must add up to 100%' });
+      }
+
+      // Generate a unique exam link ID
+      const examLinkId = uuidv4().replace(/-/g, '').substring(0, 10);
 
       // Begin transaction
       await client.query('BEGIN');
 
-      // Store the difficulty distribution and other metadata as JSON in the description field
+      // Store the metadata
       const examMetadata = {
         course_id,
         question_bank_id,
@@ -750,10 +924,6 @@ class InstructorController {
         difficultyDistribution,
         is_randomized,
       };
-
-      // Combine the description with the metadata
-      const fullDescription = description || '';
-      const metadataString = JSON.stringify(examMetadata);
 
       // Insert exam
       const examResult = await client.query(
@@ -764,22 +934,24 @@ class InstructorController {
           time_limit_minutes,
           start_date,
           end_date,
-          instructor_id,
-          access_code,
-          is_active
+          created_by,
+          exam_link_id,
+          is_active,
+          course_id
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         RETURNING exam_id`,
         [
           exam_name,
-          description, // Store the actual description
-          examMetadata, // Store the metadata as JSON
+          description,
+          examMetadata,
           duration,
-          new Date(start_date),
-          new Date(end_date),
-          user_id,
-          accessCode,
-          true, // is_active
+          startDateTime,
+          endDateTime,
+          userId,
+          examLinkId,
+          true,
+          course_id,
         ]
       );
 
@@ -800,12 +972,10 @@ class InstructorController {
 
       await client.query('COMMIT');
 
-      const response = {
+      res.status(201).json({
         exam_id: exam_id.toString(),
-        access_code: accessCode,
-      };
-      console.log('Sending exam creation response:', response);
-      res.status(201).json(response);
+        exam_link_id: examLinkId,
+      });
     } catch (error) {
       await client.query('ROLLBACK');
       console.error('Error creating exam:', error);
@@ -903,12 +1073,11 @@ class InstructorController {
           e.time_limit_minutes AS duration,
           e.start_date,
           e.end_date,
-          e.access_code AS exam_link_id,
+          e.exam_link_id,
           e.is_active,
           e.created_at,
           e.course_id,
-          e.is_randomized,
-          e.status
+          e.is_randomized
         FROM exams e
         JOIN courses c ON e.course_id = c.course_id
         JOIN course_assignments ca ON c.course_id = ca.course_id
@@ -960,14 +1129,15 @@ class InstructorController {
             [exam.exam_id]
           );
 
+          // Calculate the status
+          const status = calculateStatus(exam.start_date, exam.end_date);
+
           // Format the exam data
           return {
             ...exam,
             question_references: distributionResult.rows,
             student_count: parseInt(studentsResult.rows[0].student_count) || 0,
-            // Use database status if available, otherwise calculate it
-            status:
-              exam.status || calculateStatus(exam.start_date, exam.end_date),
+            status: status,
           };
         })
       );
@@ -987,7 +1157,13 @@ class InstructorController {
       await client.query('BEGIN');
 
       const { exam_id } = req.params;
-      const user_id = req.user.user_id;
+      const userId = req.user.userId;
+
+      console.log('Delete exam request:', {
+        exam_id,
+        userId,
+        user: req.user,
+      });
 
       if (!exam_id) {
         await client.query('ROLLBACK');
@@ -996,26 +1172,22 @@ class InstructorController {
 
       // Verify instructor owns the exam
       const examCheck = await client.query(
-        'SELECT exam_id, start_date FROM exams WHERE exam_id = $1 AND instructor_id = $2',
-        [exam_id, user_id]
+        'SELECT exam_id, created_by FROM exams WHERE exam_id = $1 AND created_by = $2',
+        [exam_id, userId]
       );
+
+      console.log('Exam check result:', {
+        rows: examCheck.rows,
+        query: {
+          exam_id,
+          userId,
+        },
+      });
 
       if (examCheck.rows.length === 0) {
         await client.query('ROLLBACK');
         return res.status(403).json({
           error: 'Unauthorized to delete this exam',
-        });
-      }
-
-      // Check if the exam has already started
-      const examData = examCheck.rows[0];
-      const startDate = new Date(examData.start_date);
-      const now = new Date();
-
-      if (now >= startDate) {
-        await client.query('ROLLBACK');
-        return res.status(400).json({
-          error: 'Cannot delete an exam that has already started or completed',
         });
       }
 
@@ -1045,98 +1217,102 @@ class InstructorController {
   async uploadAllowedStudents(req, res) {
     const client = await pool.connect();
     try {
-      await client.query('BEGIN');
-
       const { exam_id } = req.params;
-      const user_id = req.user.user_id;
+      const user_id = req.user.userId;
 
       if (!exam_id) {
-        await client.query('ROLLBACK');
         return res.status(400).json({ error: 'Exam ID is required' });
       }
 
       // Verify instructor owns the exam
       const examCheck = await client.query(
-        'SELECT exam_id FROM exams WHERE exam_id = $1 AND instructor_id = $2',
+        'SELECT exam_id FROM exams WHERE exam_id = $1 AND created_by = $2',
         [exam_id, user_id]
       );
 
       if (examCheck.rows.length === 0) {
-        await client.query('ROLLBACK');
         return res.status(403).json({
           error: 'Unauthorized to modify this exam',
         });
       }
 
-      // Handle the file upload
-      upload.single('students')(req, res, async (err) => {
-        if (err) {
-          await client.query('ROLLBACK');
-          return res.status(400).json({ error: err.message });
+      if (!req.file) {
+        return res.status(400).json({ error: 'No file uploaded' });
+      }
+
+      try {
+        // Parse the CSV file
+        const csvContent = req.file.buffer.toString('utf8');
+        const records = parse(csvContent, {
+          columns: true,
+          skip_empty_lines: true,
+          trim: true,
+        });
+
+        if (records.length === 0) {
+          return res.status(400).json({ error: 'CSV file is empty' });
         }
 
-        if (!req.file) {
-          await client.query('ROLLBACK');
-          return res.status(400).json({ error: 'No file uploaded' });
-        }
+        await client.query('BEGIN');
 
-        try {
-          // Parse the CSV file
-          const csvContent = req.file.buffer.toString('utf8');
-          const records = parse(csvContent, {
-            columns: true,
-            skip_empty_lines: true,
-            trim: true,
-          });
+        // Clear existing allowed students for this exam
+        await client.query('DELETE FROM allowed_students WHERE exam_id = $1', [
+          exam_id,
+        ]);
 
-          if (records.length === 0) {
-            await client.query('ROLLBACK');
-            return res.status(400).json({ error: 'CSV file is empty' });
+        // Insert new allowed students
+        let insertedCount = 0;
+        for (const record of records) {
+          // Log the record for debugging
+          console.log('Processing record:', record);
+
+          // Map CSV fields to database fields
+          const studentId = record.student_id;
+          const studentName = record.student_name;
+          const studentEmail = record.student_email;
+
+          // Validate required fields
+          if (!studentId || !studentName || !studentEmail) {
+            console.warn('Skipping invalid record:', record);
+            continue;
           }
 
-          // Clear existing allowed students for this exam
+          // Validate email format
+          const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+          if (!emailRegex.test(studentEmail)) {
+            console.warn('Invalid email format:', studentEmail);
+            continue;
+          }
+
           await client.query(
-            'DELETE FROM allowed_students WHERE exam_id = $1',
-            [exam_id]
+            `INSERT INTO allowed_students (exam_id, student_id, student_name, student_email)
+             VALUES ($1, $2, $3, $4)`,
+            [exam_id, studentId, studentName, studentEmail]
           );
 
-          // Insert new allowed students
-          let insertedCount = 0;
-          for (const record of records) {
-            // Validate required fields
-            if (!record.student_id || !record.name) {
-              console.warn('Skipping invalid record:', record);
-              continue;
-            }
-
-            await client.query(
-              `INSERT INTO allowed_students (exam_id, uni_id, student_name)
-               VALUES ($1, $2, $3)`,
-              [exam_id, record.student_id, record.name]
-            );
-
-            insertedCount++;
-          }
-
-          await client.query('COMMIT');
-
-          res.status(200).json({
-            message: `Successfully uploaded ${insertedCount} students`,
-            exam_id,
-          });
-        } catch (error) {
-          await client.query('ROLLBACK');
-          console.error('Error processing CSV:', error);
-          res.status(500).json({
-            error: 'Error processing CSV file',
-            details: error.message,
-          });
+          insertedCount++;
         }
-      });
+
+        await client.query('COMMIT');
+
+        res.status(200).json({
+          message: `Successfully uploaded ${insertedCount} students`,
+          exam_id,
+        });
+      } catch (error) {
+        await client.query('ROLLBACK');
+        console.error('Error processing CSV:', error);
+        res.status(500).json({
+          error: 'Error processing CSV file',
+          details: error.message,
+        });
+      }
     } catch (error) {
-      await client.query('ROLLBACK');
+      if (client.query) await client.query('ROLLBACK');
       console.error('Error uploading students:', error);
       handleDbError(res, error);
+    } finally {
+      client.release();
     }
   }
 
@@ -1176,7 +1352,7 @@ class InstructorController {
 
       // Verify instructor owns the exam
       const examCheck = await client.query(
-        'SELECT exam_id, start_date FROM exams WHERE exam_id = $1 AND instructor_id = $2',
+        'SELECT exam_id, start_date FROM exams WHERE exam_id = $1 AND created_by = $2',
         [exam_id, user_id]
       );
 
@@ -1310,7 +1486,7 @@ class InstructorController {
           e.time_limit_minutes AS duration,
           e.start_date,
           e.end_date,
-          e.access_code AS exam_link_id,
+          e.exam_link_id,
           e.is_active,
           e.created_at,
           e.created_by,
@@ -1619,6 +1795,185 @@ class InstructorController {
       await client.query('ROLLBACK');
       console.error('Error deleting chapter:', error);
       handleDbError(res, error);
+    } finally {
+      client.release();
+    }
+  }
+
+  // Validate student file
+  async validateStudentFile(req, res) {
+    try {
+      if (!req.file) {
+        return res.status(400).json({
+          success: false,
+          error: 'No file uploaded',
+        });
+      }
+
+      // Convert buffer to string and detect if it's TSV by checking for tabs
+      const fileContent = req.file.buffer.toString('utf8');
+      const delimiter = fileContent.includes('\t') ? '\t' : ',';
+
+      const records = parse(fileContent, {
+        columns: true,
+        skip_empty_lines: true,
+        trim: true,
+        delimiter: delimiter,
+        relaxColumnCount: true,
+      });
+
+      console.log('Parsed records:', records); // Add this for debugging
+
+      const { errors, validRows } = validateStudentData(records);
+
+      if (errors.length > 0) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid file format',
+          details: errors,
+        });
+      }
+
+      res.json({
+        success: true,
+        message: 'File format is valid',
+        studentCount: validRows.length,
+      });
+    } catch (error) {
+      console.error('Error validating student file:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to validate file',
+        details: error.message,
+      });
+    }
+  }
+
+  // Create exam with students in a single transaction
+  async createExamWithStudents(req, res) {
+    const client = await pool.connect();
+    try {
+      if (!req.file) {
+        return res.status(400).json({
+          error: 'No student file uploaded',
+        });
+      }
+
+      const examData = JSON.parse(req.body.examData);
+      const userId = req.user.userId;
+
+      // Parse student file
+      const fileContent = req.file.buffer.toString('utf8');
+      const delimiter = fileContent.includes('\t') ? '\t' : ',';
+
+      const records = parse(fileContent, {
+        columns: true,
+        skip_empty_lines: true,
+        trim: true,
+        delimiter: delimiter,
+        relaxColumnCount: true,
+      });
+
+      console.log('Parsed student records:', records); // Add for debugging
+
+      // Validate student data
+      const { errors, validRows } = validateStudentData(records);
+      if (errors.length > 0) {
+        return res.status(400).json({
+          error: 'Invalid student file',
+          details: errors,
+        });
+      }
+
+      // Start transaction
+      await client.query('BEGIN');
+
+      // Generate exam link ID
+      const examLinkId = uuidv4().replace(/-/g, '').substring(0, 10);
+
+      // Store the metadata
+      const examMetadata = {
+        course_id: examData.course_id,
+        question_bank_id: examData.question_bank_id,
+        total_questions: examData.total_questions,
+        difficultyDistribution: examData.difficultyDistribution,
+        is_randomized: examData.is_randomized,
+      };
+
+      // Insert exam
+      const examResult = await client.query(
+        `INSERT INTO exams (
+          exam_name,
+          description,
+          exam_metadata,
+          time_limit_minutes,
+          start_date,
+          end_date,
+          created_by,
+          exam_link_id,
+          is_active,
+          course_id
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        RETURNING exam_id`,
+        [
+          examData.exam_name,
+          examData.description,
+          examMetadata,
+          examData.duration,
+          new Date(examData.start_date),
+          new Date(examData.end_date),
+          userId,
+          examLinkId,
+          true,
+          examData.course_id,
+        ]
+      );
+
+      const exam_id = examResult.rows[0].exam_id;
+
+      // Insert chapter distribution
+      for (const item of examData.chapterDistribution) {
+        await client.query(
+          `INSERT INTO exam_specifications (
+            exam_id,
+            chapter,
+            num_questions
+          )
+          VALUES ($1, $2, $3)`,
+          [exam_id, item.chapter, item.count]
+        );
+      }
+
+      // Insert allowed students
+      for (const student of validRows) {
+        await client.query(
+          `INSERT INTO allowed_students (
+            exam_id,
+            student_id,
+            student_email,
+            student_name
+          )
+          VALUES ($1, $2, $3, $4)`,
+          [exam_id, student.student_id, student.email, student.name]
+        );
+      }
+
+      await client.query('COMMIT');
+
+      res.status(201).json({
+        success: true,
+        exam_id: exam_id.toString(),
+        exam_link_id: examLinkId,
+      });
+    } catch (error) {
+      await client.query('ROLLBACK');
+      console.error('Error creating exam with students:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to create exam',
+        details: error.message,
+      });
     } finally {
       client.release();
     }
