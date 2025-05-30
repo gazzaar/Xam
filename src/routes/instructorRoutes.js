@@ -145,6 +145,19 @@ router.post(
 );
 
 /**
+ * @route GET /api/instructor/exams/:exam_id/export-grades
+ * @description Export student grades for an exam as CSV
+ * @access Private (Instructor only)
+ * @param {string} exam_id - ID of the exam
+ */
+router.get(
+  '/exams/:exam_id/export-grades',
+  authMiddleware.verifyToken,
+  authMiddleware.isInstructor,
+  instructorController.exportStudentGrades
+);
+
+/**
  * @route GET /api/instructor/exams/:exam_id/results
  * @description Get exam results
  * @access Private (Instructor only)

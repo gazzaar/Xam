@@ -1369,6 +1369,79 @@ class InstructorController {
     res.status(501).json({ message: 'Not implemented yet' });
   }
 
+  // Export student grades to CSV
+  async exportStudentGrades(req, res) {
+    try {
+      const { exam_id } = req.params;
+      const user_id = req.user.userId;
+
+      // Verify instructor owns or has access to the exam
+      const examCheck = await pool.query(
+        `SELECT e.exam_id, e.exam_name
+         FROM exams e
+         JOIN courses c ON e.course_id = c.course_id
+         JOIN course_assignments ca ON c.course_id = ca.course_id
+         WHERE e.exam_id = $1
+         AND (e.created_by = $2 OR ca.instructor_id = $2)
+         AND ca.is_active = true`,
+        [exam_id, user_id]
+      );
+
+      if (examCheck.rows.length === 0) {
+        return res.status(403).json({
+          error: 'You do not have permission to access this exam data',
+        });
+      }
+
+      // Get student grades for this exam
+      const gradesResult = await pool.query(
+        `SELECT
+           als.student_id,
+           als.student_name,
+           als.student_email,
+           se.score as grade
+         FROM student_exams se
+         JOIN allowed_students als ON se.exam_id = als.exam_id AND se.student_id = als.student_id
+         WHERE se.exam_id = $1
+         AND se.status = 'completed'
+         ORDER BY als.student_name`,
+        [exam_id]
+      );
+
+      if (gradesResult.rows.length === 0) {
+        return res.status(404).json({
+          error: 'No completed exam records found',
+        });
+      }
+
+      // Create CSV header
+      const csvHeader = 'Student ID,Student Name,Student Email,Grade\n';
+
+      // Create CSV rows
+      const csvRows = gradesResult.rows
+        .map((student) => {
+          return `${student.student_id},"${student.student_name}",${student.student_email},${student.grade}`;
+        })
+        .join('\n');
+
+      // Combine header and rows
+      const csvContent = csvHeader + csvRows;
+
+      // Set response headers for CSV download
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename=exam_${exam_id}_grades.csv`
+      );
+
+      // Send the CSV content
+      res.send(csvContent);
+    } catch (error) {
+      console.error('Error exporting grades:', error);
+      handleDbError(res, error);
+    }
+  }
+
   // Get dashboard stats
   async getDashboardStats(req, res) {
     const client = await pool.connect();
