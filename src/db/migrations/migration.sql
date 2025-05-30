@@ -56,7 +56,7 @@ CREATE TABLE IF NOT EXISTS questions (
   question_text TEXT NOT NULL,
   question_type question_type NOT NULL,
   points INTEGER NOT NULL,
-  image_url VARCHAR(255),
+  image_url TEXT,
   chapter VARCHAR(50),
   question_bank_id INTEGER REFERENCES question_banks(question_bank_id) ON DELETE CASCADE,
   created_by INTEGER REFERENCES users(user_id),
