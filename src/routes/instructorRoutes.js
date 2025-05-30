@@ -17,6 +17,22 @@ const upload = multer({
   },
 });
 
+// Configure multer for JSON file uploads
+const jsonUpload = multer({
+  storage: multer.memoryStorage(),
+  fileFilter: (req, file, cb) => {
+    // Accept only JSON files
+    if (file.mimetype === 'application/json') {
+      cb(null, true);
+    } else {
+      cb(new Error('Only JSON files are allowed'));
+    }
+  },
+  limits: {
+    fileSize: 5 * 1024 * 1024, // Limit file size to 5MB
+  },
+});
+
 // Exam Generation
 router.post(
   '/exams/generate',
@@ -292,6 +308,19 @@ router.post(
   authMiddleware.verifyToken,
   authMiddleware.isInstructor,
   instructorController.migrateExternalImages
+);
+
+/**
+ * @route POST /api/instructor/question-banks/:question_bank_id/import
+ * @description Import questions from JSON file
+ * @access Private (Instructor only)
+ */
+router.post(
+  '/question-banks/:question_bank_id/import',
+  authMiddleware.verifyToken,
+  authMiddleware.isInstructor,
+  jsonUpload.single('questions'),
+  instructorController.importQuestionsFromJson
 );
 
 module.exports = router;

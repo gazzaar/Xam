@@ -436,10 +436,18 @@ class InstructorController {
         // Store the image URL directly without any processing
         const imageUrl = question.image_url || null;
 
+        // Validate difficulty
+        const difficulty = question.difficulty || 'medium';
+        if (!['easy', 'medium', 'hard'].includes(difficulty)) {
+          return res.status(400).json({
+            error: 'Difficulty must be one of: easy, medium, hard',
+          });
+        }
+
         const questionResult = await client.query(
           `INSERT INTO questions
-           (question_text, question_type, points, image_url, chapter, question_bank_id, created_by)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)
+           (question_text, question_type, points, image_url, chapter, difficulty, question_bank_id, created_by)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
            RETURNING question_id`,
           [
             question.question_text,
@@ -447,6 +455,7 @@ class InstructorController {
             points,
             imageUrl,
             question.chapter,
+            difficulty,
             question_bank_id,
             user_id,
           ]
@@ -513,7 +522,8 @@ class InstructorController {
            u.first_name as created_by_first_name,
            u.last_name as created_by_last_name,
            u.username as created_by_username,
-           q.image_url
+           q.image_url,
+           q.difficulty
          FROM questions q
          LEFT JOIN users u ON q.created_by = u.user_id
          WHERE q.question_bank_id = $1
@@ -703,19 +713,11 @@ class InstructorController {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-
       const { question_bank_id, question_id } = req.params;
       const user_id = req.user.userId;
 
-      console.log(
-        'Deleting question:',
-        question_id,
-        'from question bank:',
-        question_bank_id
-      );
-
-      // Verify instructor has access to the question bank
-      const bankCheck = await client.query(
+      // First check if the instructor has access to this question bank
+      const accessCheck = await client.query(
         `SELECT qb.question_bank_id
          FROM question_banks qb
          JOIN courses c ON qb.course_id = c.course_id
@@ -726,30 +728,62 @@ class InstructorController {
         [question_bank_id, user_id]
       );
 
-      if (bankCheck.rows.length === 0) {
+      if (accessCheck.rows.length === 0) {
         await client.query('ROLLBACK');
         return res.status(403).json({
-          error: 'Unauthorized to modify this question bank',
+          error:
+            'You do not have permission to delete questions from this question bank',
         });
       }
 
-      // Delete the question (cascade will handle question_options)
-      await client.query(
-        `DELETE FROM questions
-         WHERE question_id = $1
-         AND question_bank_id = $2`,
-        [question_id, question_bank_id]
+      // Check if the question is used in any student exam responses
+      const studentExamCheck = await client.query(
+        `SELECT DISTINCT e.exam_name
+         FROM student_exam_questions seq
+         JOIN student_exams se ON seq.student_exam_id = se.student_exam_id
+         JOIN exams e ON se.exam_id = e.exam_id
+         WHERE seq.question_id = $1`,
+        [question_id]
       );
 
-      await client.query('COMMIT');
+      // Check if the question is used in any exam specifications
+      const examSpecCheck = await client.query(
+        `SELECT DISTINCT e.exam_name
+         FROM exam_specifications es
+         JOIN exams e ON es.exam_id = e.exam_id
+         WHERE es.question_bank_id = $1
+         AND e.is_active = true`,
+        [question_bank_id]
+      );
 
-      res.status(200).json({
-        message: 'Question removed successfully',
-      });
+      // Combine results from both checks
+      const usedInExams = [
+        ...new Set([
+          ...studentExamCheck.rows.map((row) => row.exam_name),
+          ...examSpecCheck.rows.map((row) => row.exam_name),
+        ]),
+      ];
+
+      if (usedInExams.length > 0) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          error:
+            'Cannot delete this question as it is being used in the following exams: ' +
+            usedInExams.join(', '),
+        });
+      }
+
+      // If not used in any exams, proceed with deletion
+      await client.query('DELETE FROM questions WHERE question_id = $1', [
+        question_id,
+      ]);
+
+      await client.query('COMMIT');
+      res.json({ message: 'Question deleted successfully' });
     } catch (error) {
       await client.query('ROLLBACK');
-      console.error('Error deleting question:', error);
-      handleDbError(res, error);
+      console.error('Database error:', error);
+      res.status(500).json({ error: 'Failed to delete question' });
     } finally {
       client.release();
     }
@@ -2360,6 +2394,159 @@ class InstructorController {
       await client.query('ROLLBACK');
       console.error('Error during image migration:', error);
       handleDbError(res, error);
+    } finally {
+      client.release();
+    }
+  }
+
+  // Import questions from JSON file
+  async importQuestionsFromJson(req, res) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const { question_bank_id } = req.params;
+      const user_id = req.user.userId;
+
+      // Verify instructor owns or has access to the question bank
+      const bankCheck = await client.query(
+        `SELECT qb.question_bank_id, qb.course_id
+         FROM question_banks qb
+         JOIN courses c ON qb.course_id = c.course_id
+         JOIN course_assignments ca ON c.course_id = ca.course_id
+         WHERE qb.question_bank_id = $1
+         AND ca.instructor_id = $2
+         AND ca.is_active = true`,
+        [question_bank_id, user_id]
+      );
+
+      if (bankCheck.rows.length === 0) {
+        return res.status(403).json({
+          error: 'Unauthorized to modify this question bank',
+        });
+      }
+
+      // Get the uploaded file from multer
+      if (!req.file) {
+        return res.status(400).json({
+          error: 'No JSON file uploaded',
+        });
+      }
+
+      // Parse the JSON file
+      let questions;
+      try {
+        const fileContent = req.file.buffer.toString();
+        const jsonData = JSON.parse(fileContent);
+        questions = jsonData.questions;
+
+        if (!Array.isArray(questions)) {
+          throw new Error('Invalid format: questions must be an array');
+        }
+      } catch (error) {
+        return res.status(400).json({
+          error: 'Invalid JSON format',
+          details: error.message,
+        });
+      }
+
+      // Validate each question
+      for (const question of questions) {
+        // Basic field validation
+        if (
+          !question.question_text ||
+          !question.question_type ||
+          !question.chapter
+        ) {
+          throw new Error(
+            'Missing required fields: question_text, question_type, or chapter'
+          );
+        }
+
+        // Validate question type
+        if (
+          !['multiple-choice', 'true/false'].includes(question.question_type)
+        ) {
+          throw new Error(`Invalid question type: ${question.question_type}`);
+        }
+
+        // Validate points
+        const points = parseInt(question.points) || 1;
+        if (points < 1 || points > 15) {
+          throw new Error('Question points must be between 1 and 15');
+        }
+
+        // Validate options
+        if (!Array.isArray(question.options) || question.options.length === 0) {
+          throw new Error('Questions must have at least one option');
+        }
+
+        if (
+          question.question_type === 'true/false' &&
+          question.options.length !== 2
+        ) {
+          throw new Error('True/False questions must have exactly two options');
+        }
+
+        // Validate that at least one option is correct
+        const hasCorrectOption = question.options.some((opt) => opt.is_correct);
+        if (!hasCorrectOption) {
+          throw new Error('At least one option must be marked as correct');
+        }
+
+        // Validate difficulty
+        if (
+          question.difficulty &&
+          !['easy', 'medium', 'hard'].includes(question.difficulty)
+        ) {
+          throw new Error('Difficulty must be either easy, medium, or hard');
+        }
+      }
+
+      // Insert questions
+      for (const question of questions) {
+        // Insert the question
+        const questionResult = await client.query(
+          `INSERT INTO questions
+           (question_text, question_type, points, image_url, chapter, difficulty, question_bank_id, created_by)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+           RETURNING question_id`,
+          [
+            question.question_text,
+            question.question_type,
+            parseInt(question.points) || 1,
+            question.image_url || null,
+            question.chapter,
+            question.difficulty || 'medium',
+            question_bank_id,
+            user_id,
+          ]
+        );
+
+        const questionId = questionResult.rows[0].question_id;
+
+        // Insert options
+        for (const option of question.options) {
+          await client.query(
+            `INSERT INTO question_options (question_id, option_text, is_correct)
+             VALUES ($1, $2, $3)`,
+            [questionId, option.text, option.is_correct]
+          );
+        }
+      }
+
+      await client.query('COMMIT');
+
+      res.status(201).json({
+        message: `Successfully imported ${questions.length} questions`,
+        count: questions.length,
+      });
+    } catch (error) {
+      await client.query('ROLLBACK');
+      console.error('Error importing questions:', error);
+      res.status(400).json({
+        error: error.message || 'Failed to import questions',
+      });
     } finally {
       client.release();
     }
