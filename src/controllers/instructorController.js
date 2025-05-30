@@ -475,10 +475,15 @@ class InstructorController {
         });
       }
 
-      // Get all the questions in the question bank
+      // Get all the questions in the question bank with creator information
       const questionsResult = await pool.query(
-        `SELECT q.*
+        `SELECT
+           q.*,
+           u.first_name as created_by_first_name,
+           u.last_name as created_by_last_name,
+           u.username as created_by_username
          FROM questions q
+         LEFT JOIN users u ON q.created_by = u.user_id
          WHERE q.question_bank_id = $1
          ORDER BY q.created_at DESC`,
         [question_bank_id]
@@ -1064,7 +1069,7 @@ class InstructorController {
     try {
       const user_id = req.user.userId;
 
-      // Get all exams for this instructor by checking course assignments
+      // Get only exams created by this instructor
       const examsResult = await pool.query(
         `SELECT DISTINCT
           e.exam_id,
@@ -1081,8 +1086,7 @@ class InstructorController {
         FROM exams e
         JOIN courses c ON e.course_id = c.course_id
         JOIN course_assignments ca ON c.course_id = ca.course_id
-        WHERE (e.created_by = $1 OR ca.instructor_id = $1)
-          AND ca.is_active = true
+        WHERE e.created_by = $1
         ORDER BY e.created_at DESC`,
         [user_id]
       );
@@ -1335,9 +1339,7 @@ class InstructorController {
       const activeExamsResult = await client.query(
         `SELECT COUNT(*) as count
          FROM exams e
-         JOIN courses c ON e.course_id = c.course_id
-         JOIN course_assignments ca ON c.course_id = ca.course_id
-         WHERE ca.instructor_id = $1
+         WHERE e.created_by = $1
          AND e.start_date <= NOW()
          AND e.end_date >= NOW()`,
         [user_id]
@@ -1347,9 +1349,7 @@ class InstructorController {
       const totalExamsResult = await client.query(
         `SELECT COUNT(*) as count
          FROM exams e
-         JOIN courses c ON e.course_id = c.course_id
-         JOIN course_assignments ca ON c.course_id = ca.course_id
-         WHERE ca.instructor_id = $1`,
+         WHERE e.created_by = $1`,
         [user_id]
       );
 
@@ -1358,9 +1358,7 @@ class InstructorController {
         `SELECT COUNT(DISTINCT se.student_id) as count
          FROM student_exams se
          JOIN exams e ON se.exam_id = e.exam_id
-         JOIN courses c ON e.course_id = c.course_id
-         JOIN course_assignments ca ON c.course_id = ca.course_id
-         WHERE ca.instructor_id = $1
+         WHERE e.created_by = $1
          AND se.start_time >= $2
          AND se.start_time < $3`,
         [user_id, today, tomorrow]
@@ -1371,9 +1369,7 @@ class InstructorController {
         `SELECT COALESCE(AVG(se.score), 0) as avg_score
          FROM student_exams se
          JOIN exams e ON se.exam_id = e.exam_id
-         JOIN courses c ON e.course_id = c.course_id
-         JOIN course_assignments ca ON c.course_id = ca.course_id
-         WHERE ca.instructor_id = $1
+         WHERE e.created_by = $1
          AND se.status = 'completed'`,
         [user_id]
       );
@@ -1392,9 +1388,7 @@ class InstructorController {
              COUNT(*) as count
            FROM student_exams se
            JOIN exams e ON se.exam_id = e.exam_id
-           JOIN courses c ON e.course_id = c.course_id
-           JOIN course_assignments ca ON c.course_id = ca.course_id
-           WHERE ca.instructor_id = $1
+           WHERE e.created_by = $1
            AND se.status = 'completed'
            GROUP BY
              CASE
@@ -1424,9 +1418,7 @@ class InstructorController {
            JOIN questions q ON seq.question_id = q.question_id
            JOIN student_exams se ON seq.student_exam_id = se.student_exam_id
            JOIN exams e ON se.exam_id = e.exam_id
-           JOIN courses c ON e.course_id = c.course_id
-           JOIN course_assignments ca ON c.course_id = ca.course_id
-           WHERE ca.instructor_id = $1
+           WHERE e.created_by = $1
            AND se.status = 'completed'
            AND q.chapter IS NOT NULL
            GROUP BY q.chapter
@@ -1491,10 +1483,8 @@ class InstructorController {
             ) chapters
           ) as chapter_performance
         FROM exams e
-        JOIN courses c ON e.course_id = c.course_id
-        JOIN course_assignments ca ON c.course_id = ca.course_id
         LEFT JOIN student_exams se ON e.exam_id = se.exam_id
-        WHERE ca.instructor_id = $1
+        WHERE e.created_by = $1
         GROUP BY e.exam_id, e.exam_name
         ORDER BY e.created_at DESC`,
         [user_id]
