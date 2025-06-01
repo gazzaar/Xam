@@ -5,6 +5,49 @@ dotenv.config();
 const dbUser = process.env.DB_USER;
 const dbPass = process.env.DB_PASS;
 
+// Function to create admin user
+async function createAdminUser(client) {
+  try {
+    // Check if admin already exists
+    const checkResult = await client.query(
+      "SELECT * FROM users WHERE username = 'admin'"
+    );
+
+    if (checkResult.rows.length > 0) {
+      console.log('Admin user already exists');
+      return;
+    }
+
+    // Insert admin user
+    await client.query(
+      `INSERT INTO users (
+        username,
+        password,
+        role,
+        email,
+        first_name,
+        last_name,
+        is_approved,
+        is_active
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [
+        'admin',
+        'admin123', // Plain password for now
+        'admin',
+        'admin@example.com',
+        'Admin',
+        'User',
+        true,
+        true,
+      ]
+    );
+
+    console.log('Admin user created successfully');
+  } catch (error) {
+    console.error('Error creating admin user:', error);
+  }
+}
+
 const SQL = `
 -- Create ENUM types
 CREATE TYPE public.exam_status AS ENUM (
@@ -249,39 +292,198 @@ CREATE INDEX IF NOT EXISTS idx_student_exams_uni_id ON student_exams(student_id)
 CREATE INDEX IF NOT EXISTS idx_student_exams_status ON student_exams(status);
 
 -- Create functions
-CREATE OR REPLACE FUNCTION generate_student_exam(p_exam_id INTEGER, p_uni_id VARCHAR(255), p_student_name VARCHAR(255))
+CREATE OR REPLACE FUNCTION generate_student_exam(p_exam_id INTEGER, p_student_id VARCHAR(255), p_student_name VARCHAR(255))
 RETURNS INTEGER AS $$
 DECLARE
   v_student_exam_id INTEGER;
   v_spec RECORD;
   v_question_count INTEGER := 1;
+  v_exam_metadata JSONB;
+  v_chapter_dist RECORD;
+  v_difficulty_dist JSONB;
+  v_total_questions INTEGER;
+  v_question_bank_id INTEGER;
+  v_available_easy INTEGER;
+  v_available_medium INTEGER;
+  v_available_hard INTEGER;
+  v_easy_count INTEGER;
+  v_medium_count INTEGER;
+  v_hard_count INTEGER;
 BEGIN
-  -- Create a new student exam record
-  INSERT INTO student_exams (exam_id, student_id, student_name, status)
-  VALUES (p_exam_id, p_uni_id, p_student_name, 'not_started')
+  -- Get exam metadata
+  SELECT exam_metadata INTO v_exam_metadata
+  FROM exams
+  WHERE exam_id = p_exam_id;
+
+  -- Create a new student exam record if it doesn't exist
+  INSERT INTO student_exams (exam_id, student_id, student_name, status, start_time)
+  VALUES (p_exam_id, p_student_id, p_student_name, 'in_progress', NOW())
+  ON CONFLICT (exam_id, student_id) DO NOTHING
   RETURNING student_exam_id INTO v_student_exam_id;
 
-  -- Process each specification
-  FOR v_spec IN
-    SELECT * FROM exam_specifications WHERE exam_id = p_exam_id
-  LOOP
-    -- Insert selected questions
-    WITH eligible_questions AS (
-      SELECT q.question_id
-      FROM questions q
-      WHERE q.question_bank_id = v_spec.question_bank_id
-    )
-    INSERT INTO student_exam_questions (student_exam_id, question_id, question_order)
-    SELECT
-      v_student_exam_id,
-      question_id,
-      v_question_count + row_number() OVER (ORDER BY random()) - 1
-    FROM eligible_questions
-    ORDER BY random()
-    LIMIT v_spec.num_questions;
+  -- If no new record was created, get the existing one
+  IF v_student_exam_id IS NULL THEN
+    SELECT student_exam_id INTO v_student_exam_id
+    FROM student_exams
+    WHERE exam_id = p_exam_id AND student_id = p_student_id;
+  END IF;
 
-    v_question_count := v_question_count + v_spec.num_questions;
+  -- Get question bank ID and total questions from metadata
+  v_question_bank_id := (v_exam_metadata->>'question_bank_id')::INTEGER;
+  v_total_questions := (v_exam_metadata->>'total_questions')::INTEGER;
+  v_difficulty_dist := v_exam_metadata->'difficultyDistribution';
+
+  -- Process each chapter specification
+  FOR v_chapter_dist IN
+    SELECT chapter, num_questions
+    FROM exam_specifications
+    WHERE exam_id = p_exam_id
+  LOOP
+    -- Get available questions count for each difficulty
+    SELECT COUNT(*) INTO v_available_easy
+    FROM questions q
+    WHERE q.question_bank_id = v_question_bank_id
+    AND q.chapter = v_chapter_dist.chapter
+    AND q.difficulty = 'easy';
+
+    SELECT COUNT(*) INTO v_available_medium
+    FROM questions q
+    WHERE q.question_bank_id = v_question_bank_id
+    AND q.chapter = v_chapter_dist.chapter
+    AND q.difficulty = 'medium';
+
+    SELECT COUNT(*) INTO v_available_hard
+    FROM questions q
+    WHERE q.question_bank_id = v_question_bank_id
+    AND q.chapter = v_chapter_dist.chapter
+    AND q.difficulty = 'hard';
+
+    -- Calculate total available questions
+    DECLARE
+      v_total_available INTEGER := v_available_easy + v_available_medium + v_available_hard;
+    BEGIN
+      IF v_total_available = 0 THEN
+        RAISE EXCEPTION 'No questions available for chapter %', v_chapter_dist.chapter;
+      END IF;
+
+      -- Calculate initial counts based on percentages
+      v_easy_count := CEIL(v_chapter_dist.num_questions * (v_difficulty_dist->>'easy')::INTEGER / 100.0);
+      v_medium_count := CEIL(v_chapter_dist.num_questions * (v_difficulty_dist->>'medium')::INTEGER / 100.0);
+      v_hard_count := v_chapter_dist.num_questions - v_easy_count - v_medium_count;
+
+      -- Adjust counts based on availability
+      IF v_easy_count > v_available_easy OR v_medium_count > v_available_medium OR v_hard_count > v_available_hard THEN
+        -- Distribute questions proportionally based on availability
+        DECLARE
+          v_remaining INTEGER := LEAST(v_chapter_dist.num_questions, v_total_available);
+        BEGIN
+          -- Handle the case where some difficulties have no questions
+          IF v_available_easy > 0 THEN
+            v_easy_count := CEIL(v_remaining * v_available_easy::FLOAT / v_total_available);
+            v_remaining := v_remaining - v_easy_count;
+          ELSE
+            v_easy_count := 0;
+          END IF;
+
+          IF v_available_medium > 0 THEN
+            IF v_available_hard = 0 THEN
+              v_medium_count := v_remaining;
+            ELSE
+              v_medium_count := CEIL(v_remaining * v_available_medium::FLOAT / (v_available_medium + v_available_hard));
+            END IF;
+            v_remaining := v_remaining - v_medium_count;
+          ELSE
+            v_medium_count := 0;
+          END IF;
+
+          IF v_available_hard > 0 THEN
+            v_hard_count := v_remaining;
+          ELSE
+            v_hard_count := 0;
+          END IF;
+        END;
+      END IF;
+
+      -- Insert easy questions
+      IF v_easy_count > 0 THEN
+        WITH eligible_questions AS (
+          SELECT q.question_id
+          FROM questions q
+          WHERE q.question_bank_id = v_question_bank_id
+          AND q.chapter = v_chapter_dist.chapter
+          AND q.difficulty = 'easy'
+          ORDER BY random()
+          LIMIT v_easy_count
+        )
+        INSERT INTO student_exam_questions (student_exam_id, question_id, question_order)
+        SELECT
+          v_student_exam_id,
+          question_id,
+          v_question_count + row_number() OVER (ORDER BY random()) - 1
+        FROM eligible_questions;
+
+        v_question_count := v_question_count + v_easy_count;
+      END IF;
+
+      -- Insert medium questions
+      IF v_medium_count > 0 THEN
+        WITH eligible_questions AS (
+          SELECT q.question_id
+          FROM questions q
+          WHERE q.question_bank_id = v_question_bank_id
+          AND q.chapter = v_chapter_dist.chapter
+          AND q.difficulty = 'medium'
+          ORDER BY random()
+          LIMIT v_medium_count
+        )
+        INSERT INTO student_exam_questions (student_exam_id, question_id, question_order)
+        SELECT
+          v_student_exam_id,
+          question_id,
+          v_question_count + row_number() OVER (ORDER BY random()) - 1
+        FROM eligible_questions;
+
+        v_question_count := v_question_count + v_medium_count;
+      END IF;
+
+      -- Insert hard questions
+      IF v_hard_count > 0 THEN
+        WITH eligible_questions AS (
+          SELECT q.question_id
+          FROM questions q
+          WHERE q.question_bank_id = v_question_bank_id
+          AND q.chapter = v_chapter_dist.chapter
+          AND q.difficulty = 'hard'
+          ORDER BY random()
+          LIMIT v_hard_count
+        )
+        INSERT INTO student_exam_questions (student_exam_id, question_id, question_order)
+        SELECT
+          v_student_exam_id,
+          question_id,
+          v_question_count + row_number() OVER (ORDER BY random()) - 1
+        FROM eligible_questions;
+
+        v_question_count := v_question_count + v_hard_count;
+      END IF;
+    END;
   END LOOP;
+
+  -- Verify total questions
+  DECLARE
+    v_actual_count INTEGER;
+  BEGIN
+    SELECT COUNT(*) INTO v_actual_count
+    FROM student_exam_questions
+    WHERE student_exam_id = v_student_exam_id;
+
+    IF v_actual_count = 0 THEN
+      RAISE EXCEPTION 'No questions could be generated for the exam';
+    END IF;
+
+    -- Log the actual distribution
+    RAISE NOTICE 'Generated % questions for exam %', v_actual_count, p_exam_id;
+  END;
 
   RETURN v_student_exam_id;
 END;
@@ -353,6 +555,9 @@ async function main() {
     console.log('Connected to database. Creating schema...');
     await client.query(SQL);
     console.log('Schema created successfully!');
+
+    // Create admin user
+    await createAdminUser(client);
   } catch (err) {
     console.error('Error creating database schema:', err.stack);
   } finally {
