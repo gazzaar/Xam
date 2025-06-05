@@ -846,15 +846,17 @@ class InstructorController {
              question_type = $2,
              points = $3,
              image_url = $4,
-             chapter = $5
-         WHERE question_id = $6
-         AND question_bank_id = $7`,
+             chapter = $5,
+             difficulty = $6
+         WHERE question_id = $7
+         AND question_bank_id = $8`,
         [
           questionData.question_text || '',
           questionData.question_type || 'multiple-choice',
           updatedPoints,
           finalImageUrl,
           questionData.chapter || '',
+          questionData.difficulty || 'medium',
           question_id,
           question_bank_id,
         ]
