@@ -5,7 +5,6 @@ const dotenv = require('dotenv');
 const path = require('path');
 
 // Import routes
-// const indexRouter = require('./routes/indexRouter');
 const authRoutes = require('./routes/authRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const instructorRoutes = require('./routes/instructorRoutes');
