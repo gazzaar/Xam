@@ -28,23 +28,6 @@ router.post('/instructors', adminController.createInstructor);
 router.get('/instructors', adminController.getAllInstructors);
 
 /**
- * @route GET /admin/instructors/pending
- * @desc Get all pending instructor registrations
- * @access Private (Admin only)
- */
-router.get('/instructors/pending', adminController.getPendingInstructors);
-
-/**
- * @route PUT /admin/instructors/:instructorId/approve
- * @desc Approve an instructor registration
- * @access Private (Admin only)
- */
-router.put(
-  '/instructors/:instructorId/approve',
-  adminController.approveInstructor
-);
-
-/**
  * @route PUT /admin/instructors/:instructorId/deactivate
  * @desc Deactivate an instructor account (reversible)
  * @access Private (Admin only)

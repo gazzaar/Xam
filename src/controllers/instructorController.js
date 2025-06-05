@@ -136,115 +136,6 @@ class InstructorController {
     }
   }
 
-  // Create a new course
-  async createCourse(req, res) {
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-
-      const { course_name, course_code, description } = req.body;
-      const user_id = req.user.userId;
-
-      // Create course (using the new schema)
-      const courseResult = await client.query(
-        `INSERT INTO courses (course_name, course_code, description, created_by)
-         VALUES ($1, $2, $3, $4)
-         RETURNING course_id, course_name, course_code, description`,
-        [course_name, course_code, description, user_id]
-      );
-
-      // Create course assignment for the instructor
-      await client.query(
-        `INSERT INTO course_assignments (course_id, instructor_id, assigned_by)
-         VALUES ($1, $2, $3)`,
-        [courseResult.rows[0].course_id, user_id, user_id]
-      );
-
-      await client.query('COMMIT');
-
-      // Return the course data in the same format as getCourses
-      const result = await client.query(
-        `SELECT c.course_id, c.course_name, c.course_code, c.description
-         FROM courses c
-         JOIN course_assignments ca ON c.course_id = ca.course_id
-         WHERE c.course_id = $1 AND ca.instructor_id = $2 AND ca.is_active = true`,
-        [courseResult.rows[0].course_id, user_id]
-      );
-
-      res.status(201).json(result.rows[0]);
-    } catch (error) {
-      await client.query('ROLLBACK');
-      handleDbError(res, error);
-    } finally {
-      client.release();
-    }
-  }
-
-  // Delete course
-  async deleteCourse(req, res) {
-    const client = await pool.connect();
-    try {
-      const user_id = req.user.userId;
-      const { course_id } = req.params;
-
-      // Verify the course belongs to the instructor through course_assignments
-      const courseResult = await client.query(
-        `SELECT * FROM course_assignments WHERE course_id = $1 AND instructor_id = $2 AND is_active = true`,
-        [course_id, user_id]
-      );
-
-      if (courseResult.rows.length === 0) {
-        return res
-          .status(403)
-          .json({ error: 'You do not have permission to delete this course' });
-      }
-
-      // Check if there are any exams using this course
-      const examsResult = await client.query(
-        `SELECT * FROM exams WHERE course_id = $1`,
-        [course_id]
-      );
-
-      if (examsResult.rows.length > 0) {
-        return res.status(400).json({
-          error: 'Cannot delete course that is being used by exams',
-          count: examsResult.rows.length,
-        });
-      }
-
-      // Begin transaction
-      await client.query('BEGIN');
-
-      // Delete all question banks associated with this course
-      await client.query(`DELETE FROM question_banks WHERE course_id = $1`, [
-        course_id,
-      ]);
-
-      // Delete course assignments
-      await client.query(
-        `DELETE FROM course_assignments WHERE course_id = $1`,
-        [course_id]
-      );
-
-      // Delete the course
-      await client.query(`DELETE FROM courses WHERE course_id = $1`, [
-        course_id,
-      ]);
-
-      await client.query('COMMIT');
-
-      res.status(200).json({
-        message: 'Course deleted successfully',
-      });
-    } catch (error) {
-      await client.query('ROLLBACK');
-      console.error('Error deleting course:', error);
-      handleDbError(res, error);
-    } finally {
-      client.release();
-    }
-  }
-
   // Create a question bank
   async createQuestionBank(req, res) {
     const client = await pool.connect();
@@ -495,7 +386,7 @@ class InstructorController {
       const user_id = req.user.userId;
 
       // Log the question bank ID for debugging
-      console.log('Fetching questions for question bank ID:', question_bank_id);
+      // console.log('Fetching questions for question bank ID:', question_bank_id);
 
       // First verify that the user has access to this question bank
       const accessCheck = await pool.query(
@@ -535,7 +426,7 @@ class InstructorController {
       const questions = [];
       for (const question of questionsResult.rows) {
         // Log the question ID for debugging
-        console.log('Processing question ID:', question.question_id);
+        // console.log('Processing question ID:', question.question_id);
 
         const optionsResult = await pool.query(
           `SELECT option_id, option_text, is_correct
@@ -545,17 +436,17 @@ class InstructorController {
           [question.question_id]
         );
 
-        console.log(
-          'Options result:',
-          JSON.stringify(optionsResult.rows, null, 2)
-        );
+        // console.log(
+        //   'Options result:',
+        //   JSON.stringify(optionsResult.rows, null, 2)
+        // );
 
         // Extract options and correct answers into separate arrays
         const options = optionsResult.rows.map((row) => row.option_text);
         const correct_answers = optionsResult.rows.map((row) => row.is_correct);
 
-        console.log('Processed options:', options);
-        console.log('Processed correct_answers:', correct_answers);
+        // console.log('Processed options:', options);
+        // console.log('Processed correct_answers:', correct_answers);
 
         // Add the options and correct answers to the question
         questions.push({
@@ -566,145 +457,11 @@ class InstructorController {
       }
 
       // Log the result for debugging
-      console.log('Questions result:', JSON.stringify(questions, null, 2));
+      // console.log('Questions result:', JSON.stringify(questions, null, 2));
 
       res.json(questions);
     } catch (error) {
       handleDbError(res, error);
-    }
-  }
-
-  // Update question
-  async updateQuestion(req, res) {
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-
-      const { question_id } = req.params;
-      const {
-        question_text,
-        question_type,
-        points,
-        image_url,
-        chapter,
-        options,
-        explanation,
-      } = req.body;
-      const user_id = req.user.user_id;
-
-      console.log('Updating question:', question_id);
-      console.log('Question data:', req.body);
-
-      // Verify instructor owns the question
-      const questionCheck = await client.query(
-        `SELECT q.question_id
-         FROM questions q
-         WHERE q.question_id = $1 AND q.instructor_id = $2`,
-        [question_id, user_id]
-      );
-
-      if (questionCheck.rows.length === 0) {
-        await client.query('ROLLBACK');
-        return res.status(403).json({
-          error: 'Unauthorized to modify this question',
-        });
-      }
-
-      // Update question
-      await client.query(
-        `UPDATE questions
-         SET question_text = $1,
-             question_type = $2,
-             points = $3,
-             image_url = $4,
-             chapter = $5,
-             explanation = $6
-         WHERE question_id = $7`,
-        [
-          question_text,
-          question_type,
-          points,
-          image_url,
-          chapter,
-          explanation,
-          question_id,
-        ]
-      );
-
-      // Delete existing options
-      await client.query(
-        `DELETE FROM question_options WHERE question_id = $1`,
-        [question_id]
-      );
-
-      // Add new options
-      if (options && options.length > 0) {
-        for (const option of options) {
-          // Ensure is_correct is a boolean
-          const isCorrect = option.is_correct === true;
-
-          await client.query(
-            `INSERT INTO question_options (question_id, option_text, is_correct)
-             VALUES ($1, $2, $3)`,
-            [question_id, option.text, isCorrect]
-          );
-        }
-      }
-
-      await client.query('COMMIT');
-
-      res.status(200).json({
-        message: 'Question updated successfully',
-      });
-    } catch (error) {
-      await client.query('ROLLBACK');
-      handleDbError(res, error);
-    } finally {
-      client.release();
-    }
-  }
-
-  // Delete question
-  async deleteQuestion(req, res) {
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-
-      const { question_id } = req.params;
-      const user_id = req.user.user_id;
-
-      console.log('Deleting question:', question_id);
-
-      // Verify instructor owns the question
-      const questionCheck = await client.query(
-        `SELECT q.question_id
-         FROM questions q
-         WHERE q.question_id = $1 AND q.instructor_id = $2`,
-        [question_id, user_id]
-      );
-
-      if (questionCheck.rows.length === 0) {
-        await client.query('ROLLBACK');
-        return res.status(403).json({
-          error: 'Unauthorized to delete this question',
-        });
-      }
-
-      // Delete question (options will be deleted via CASCADE)
-      await client.query(`DELETE FROM questions WHERE question_id = $1`, [
-        question_id,
-      ]);
-
-      await client.query('COMMIT');
-
-      res.status(200).json({
-        message: 'Question deleted successfully',
-      });
-    } catch (error) {
-      await client.query('ROLLBACK');
-      handleDbError(res, error);
-    } finally {
-      client.release();
     }
   }
 
@@ -1129,21 +886,6 @@ class InstructorController {
     }
   }
 
-  // Generate exam (placeholder)
-  async generateExam(req, res) {
-    res.status(501).json({ message: 'Not implemented yet' });
-  }
-
-  // Add question (placeholder)
-  async addQuestion(req, res) {
-    res.status(501).json({ message: 'Not implemented yet' });
-  }
-
-  // Get questions (placeholder)
-  async getQuestions(req, res) {
-    res.status(501).json({ message: 'Not implemented yet' });
-  }
-
   // Get exams
   async getExams(req, res) {
     try {
@@ -1292,11 +1034,6 @@ class InstructorController {
     }
   }
 
-  // Add questions to exam (placeholder)
-  async addQuestions(req, res) {
-    res.status(501).json({ message: 'Not implemented yet' });
-  }
-
   // Upload allowed students
   async uploadAllowedStudents(req, res) {
     const client = await pool.connect();
@@ -1398,11 +1135,6 @@ class InstructorController {
     } finally {
       client.release();
     }
-  }
-
-  // Get exam results (placeholder)
-  async getExamResults(req, res) {
-    res.status(501).json({ message: 'Not implemented yet' });
   }
 
   // Export student grades to CSV
@@ -1686,149 +1418,6 @@ class InstructorController {
     }
   }
 
-  // Update exam
-  async updateExam(req, res) {
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-
-      const { exam_id } = req.params;
-      const {
-        exam_name,
-        description,
-        duration,
-        start_date,
-        end_date,
-        is_randomized,
-        question_distribution,
-      } = req.body;
-
-      const user_id = req.user.user_id;
-
-      if (!exam_id) {
-        await client.query('ROLLBACK');
-        return res.status(400).json({ error: 'Exam ID is required' });
-      }
-
-      // Verify instructor owns the exam
-      const examCheck = await client.query(
-        'SELECT exam_id, start_date FROM exams WHERE exam_id = $1 AND created_by = $2',
-        [exam_id, user_id]
-      );
-
-      if (examCheck.rows.length === 0) {
-        await client.query('ROLLBACK');
-        return res.status(403).json({
-          error: 'Unauthorized to modify this exam',
-        });
-      }
-
-      // Check if the exam has already started
-      const examData = examCheck.rows[0];
-      const startDate = new Date(examData.start_date);
-      const now = new Date();
-
-      if (now >= startDate) {
-        await client.query('ROLLBACK');
-        return res.status(400).json({
-          error: 'Cannot modify an exam that has already started or completed',
-        });
-      }
-
-      // Update the exam
-      const updateFields = [];
-      const updateValues = [];
-      let valueIndex = 1;
-
-      if (exam_name) {
-        updateFields.push(`exam_name = $${valueIndex}`);
-        updateValues.push(exam_name);
-        valueIndex++;
-      }
-
-      if (description !== undefined) {
-        updateFields.push(`description = $${valueIndex}`);
-        updateValues.push(description);
-        valueIndex++;
-      }
-
-      if (duration) {
-        updateFields.push(`time_limit_minutes = $${valueIndex}`);
-        updateValues.push(duration);
-        valueIndex++;
-      }
-
-      if (start_date) {
-        updateFields.push(`start_date = $${valueIndex}`);
-        updateValues.push(new Date(start_date));
-        valueIndex++;
-      }
-
-      if (end_date) {
-        updateFields.push(`end_date = $${valueIndex}`);
-        updateValues.push(new Date(end_date));
-        valueIndex++;
-      }
-
-      if (is_randomized !== undefined) {
-        updateFields.push(`is_randomized = $${valueIndex}`);
-        updateValues.push(is_randomized);
-        valueIndex++;
-      }
-
-      if (updateFields.length > 0) {
-        updateValues.push(exam_id);
-        await client.query(
-          `UPDATE exams SET ${updateFields.join(', ')} WHERE exam_id = $${valueIndex}`,
-          updateValues
-        );
-      }
-
-      // Update question distribution if provided
-      if (
-        question_distribution &&
-        Array.isArray(question_distribution) &&
-        question_distribution.length > 0
-      ) {
-        // Delete existing specifications
-        await client.query(
-          'DELETE FROM exam_specifications WHERE exam_id = $1',
-          [exam_id]
-        );
-
-        // Add new specifications
-        for (const item of question_distribution) {
-          if (!item.chapter || !item.count || item.count < 1) {
-            continue; // Skip invalid entries
-          }
-
-          await client.query(
-            `INSERT INTO exam_specifications (
-              exam_id,
-              chapter,
-              num_questions
-            )
-            VALUES ($1, $2, $3)`,
-            [exam_id, item.chapter, item.count]
-          );
-        }
-      }
-
-      await client.query('COMMIT');
-
-      res.status(200).json({
-        message: 'Exam updated successfully',
-        exam_id,
-      });
-    } catch (error) {
-      await client.query('ROLLBACK');
-      console.error('Error updating exam:', error);
-      handleDbError(res, error);
-    } finally {
-      client.release();
-    }
-  }
-
   // Get exam preview for instructors
   async getExamPreview(req, res) {
     try {
@@ -1956,10 +1545,10 @@ class InstructorController {
           [chapter, exam.course_id, count]
         );
 
-        console.log('Questions for chapter:', {
-          chapter,
-          questions: questionsResult.rows,
-        });
+        // console.log('Questions for chapter:', {
+        //   chapter,
+        //   questions: questionsResult.rows,
+        // });
 
         // For each question, get its options
         for (const question of questionsResult.rows) {
@@ -2013,72 +1602,6 @@ class InstructorController {
     }
   }
 
-  // Add chapters to a course
-  async addChaptersToCourse(req, res) {
-    const client = await pool.connect();
-    try {
-      const { course_id } = req.params;
-      const { num_chapters } = req.body;
-      const user_id = req.user.userId;
-
-      // Validate number of chapters
-      if (!num_chapters || num_chapters < 1 || num_chapters > 20) {
-        return res.status(400).json({
-          error: 'Number of chapters must be between 1 and 20',
-        });
-      }
-
-      // Verify instructor has access to the course
-      const courseCheck = await client.query(
-        `SELECT course_id
-         FROM course_assignments
-         WHERE course_id = $1 AND instructor_id = $2 AND is_active = true`,
-        [course_id, user_id]
-      );
-
-      if (courseCheck.rows.length === 0) {
-        return res.status(403).json({
-          error: 'You do not have permission to modify this course',
-        });
-      }
-
-      await client.query('BEGIN');
-
-      // Delete existing chapters
-      await client.query(`DELETE FROM course_chapters WHERE course_id = $1`, [
-        course_id,
-      ]);
-
-      // Add chapters based on the number specified
-      for (let i = 1; i <= num_chapters; i++) {
-        await client.query(
-          `INSERT INTO course_chapters (course_id, chapter_number)
-           VALUES ($1, $2)`,
-          [course_id, i]
-        );
-      }
-
-      await client.query('COMMIT');
-
-      // Get all chapters for the course
-      const result = await client.query(
-        `SELECT chapter_id, chapter_number
-         FROM course_chapters
-         WHERE course_id = $1
-         ORDER BY chapter_number`,
-        [course_id]
-      );
-
-      res.status(200).json(result.rows);
-    } catch (error) {
-      await client.query('ROLLBACK');
-      console.error('Error adding chapters:', error);
-      handleDbError(res, error);
-    } finally {
-      client.release();
-    }
-  }
-
   // Get chapters for a course
   async getChaptersForCourse(req, res) {
     const client = await pool.connect();
@@ -2112,50 +1635,6 @@ class InstructorController {
       res.json(result.rows);
     } catch (error) {
       console.error('Error fetching chapters:', error);
-      handleDbError(res, error);
-    } finally {
-      client.release();
-    }
-  }
-
-  // Delete a chapter
-  async deleteChapter(req, res) {
-    const client = await pool.connect();
-    try {
-      const { course_id, chapter_id } = req.params;
-      const user_id = req.user.userId;
-
-      // Verify instructor has access to the course
-      const courseCheck = await client.query(
-        `SELECT course_id
-         FROM course_assignments
-         WHERE course_id = $1 AND instructor_id = $2 AND is_active = true`,
-        [course_id, user_id]
-      );
-
-      if (courseCheck.rows.length === 0) {
-        return res.status(403).json({
-          error: 'You do not have permission to modify this course',
-        });
-      }
-
-      await client.query('BEGIN');
-
-      // Delete the chapter
-      await client.query(
-        `DELETE FROM course_chapters
-         WHERE chapter_id = $1 AND course_id = $2`,
-        [chapter_id, course_id]
-      );
-
-      await client.query('COMMIT');
-
-      res.status(200).json({
-        message: 'Chapter deleted successfully',
-      });
-    } catch (error) {
-      await client.query('ROLLBACK');
-      console.error('Error deleting chapter:', error);
       handleDbError(res, error);
     } finally {
       client.release();

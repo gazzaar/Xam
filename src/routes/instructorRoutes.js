@@ -33,40 +33,6 @@ const jsonUpload = multer({
   },
 });
 
-// Exam Generation
-router.post(
-  '/exams/generate',
-  authMiddleware.verifyToken,
-  authMiddleware.isInstructor,
-  instructorController.generateExam
-);
-
-// Question Management
-router.post(
-  '/questions',
-  authMiddleware.verifyToken,
-  authMiddleware.isInstructor,
-  instructorController.addQuestion
-);
-router.get(
-  '/questions',
-  authMiddleware.verifyToken,
-  authMiddleware.isInstructor,
-  instructorController.getQuestions
-);
-router.put(
-  '/questions/:questionId',
-  authMiddleware.verifyToken,
-  authMiddleware.isInstructor,
-  instructorController.updateQuestion
-);
-router.delete(
-  '/questions/:questionId',
-  authMiddleware.verifyToken,
-  authMiddleware.isInstructor,
-  instructorController.deleteQuestion
-);
-
 // Exam Management
 /**
  * @route POST /api/instructor/exams
@@ -96,22 +62,6 @@ router.get(
 );
 
 /**
- * @route PUT /api/instructor/exams/:exam_id
- * @description Update an existing exam
- * @access Private (Instructor only)
- * @param {string} exam_id - ID of the exam to update
- * @body {string} exam_name - New name of the exam
- * @body {string} description - New description of the exam
- * @body {number} time_limit_minutes - New time limit in minutes
- */
-router.put(
-  '/exams/:exam_id',
-  authMiddleware.verifyToken,
-  authMiddleware.isInstructor,
-  instructorController.updateExam
-);
-
-/**
  * @route DELETE /api/instructor/exams/:exam_id
  * @description Delete an exam
  * @access Private (Instructor only)
@@ -137,20 +87,6 @@ router.get(
   instructorController.getExamPreview
 );
 
-/**
- * @route POST /api/instructor/exams/:exam_id/questions
- * @description Add questions to an exam
- * @access Private (Instructor only)
- * @param {string} exam_id - ID of the exam
- * @body {Array} questions - Array of question objects
- */
-router.post(
-  '/exams/:exam_id/questions',
-  authMiddleware.verifyToken,
-  authMiddleware.isInstructor,
-  instructorController.addQuestions
-);
-
 // Exam Student Management
 router.post(
   '/exams/:exam_id/students/upload',
@@ -173,19 +109,6 @@ router.get(
   instructorController.exportStudentGrades
 );
 
-/**
- * @route GET /api/instructor/exams/:exam_id/results
- * @description Get exam results
- * @access Private (Instructor only)
- * @param {string} exam_id - ID of the exam
- */
-router.get(
-  '/exams/:exam_id/results',
-  authMiddleware.verifyToken,
-  authMiddleware.isInstructor,
-  instructorController.getExamResults
-);
-
 // Dashboard
 /**
  * @route GET /api/instructor/dashboard
@@ -206,23 +129,11 @@ router.get(
   authMiddleware.isInstructor,
   instructorController.getCourses
 );
-router.post(
-  '/courses/:courseId/chapters',
-  authMiddleware.verifyToken,
-  authMiddleware.isInstructor,
-  instructorController.addChaptersToCourse
-);
 router.get(
   '/courses/:courseId/chapters',
   authMiddleware.verifyToken,
   authMiddleware.isInstructor,
   instructorController.getChaptersForCourse
-);
-router.delete(
-  '/courses/:courseId/chapters/:chapterId',
-  authMiddleware.verifyToken,
-  authMiddleware.isInstructor,
-  instructorController.deleteChapter
 );
 
 // Question Bank Management

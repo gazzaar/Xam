@@ -4,83 +4,6 @@ const dotenv = require('dotenv');
 dotenv.config();
 
 const adminController = {
-  // Get all pending instructor registrations
-  getPendingInstructors: async (req, res) => {
-    const client = await pool.connect();
-    try {
-      const query = `
-        SELECT user_id, username, email, first_name, last_name, created_at
-        FROM users
-        WHERE role = 'instructor' AND is_approved = false
-        ORDER BY created_at DESC
-      `;
-
-      const result = await client.query(query);
-
-      res.status(200).json({
-        success: true,
-        data: result.rows,
-      });
-    } catch (error) {
-      console.error('Error fetching pending instructors:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Error fetching pending instructors',
-        error: error.message,
-      });
-    } finally {
-      client.release();
-    }
-  },
-
-  // Approve an instructor registration
-  approveInstructor: async (req, res) => {
-    const client = await pool.connect();
-    const { instructorId } = req.params;
-
-    try {
-      // Start a transaction
-      await client.query('BEGIN');
-
-      // Update the user's approval status
-      const updateQuery = `
-        UPDATE users
-        SET is_approved = true
-        WHERE user_id = $1 AND role = 'instructor'
-        RETURNING *
-      `;
-
-      const result = await client.query(updateQuery, [instructorId]);
-
-      if (result.rows.length === 0) {
-        await client.query('ROLLBACK');
-        return res.status(404).json({
-          success: false,
-          message: 'Instructor not found',
-        });
-      }
-
-      // Commit the transaction
-      await client.query('COMMIT');
-
-      res.status(200).json({
-        success: true,
-        message: 'Instructor approved successfully',
-        data: result.rows[0],
-      });
-    } catch (error) {
-      await client.query('ROLLBACK');
-      console.error('Error approving instructor:', error);
-      res.status(500).json({
-        success: false,
-        message: 'Error approving instructor',
-        error: error.message,
-      });
-    } finally {
-      client.release();
-    }
-  },
-
   // Get all instructors (both pending and approved)
   getAllInstructors: async (req, res) => {
     const client = await pool.connect();
@@ -144,34 +67,6 @@ const adminController = {
       });
     } finally {
       client.release();
-    }
-  },
-
-  // Get instructor's content summary
-  getInstructorContent: async (req, res) => {
-    const { instructorId } = req.params;
-    try {
-      const contentSummary = await client.query(
-        `
-        SELECT
-          (SELECT COUNT(*) FROM courses WHERE instructor_id = $1) as course_count,
-          (SELECT COUNT(*) FROM question_banks WHERE instructor_id = $1) as bank_count,
-          (SELECT COUNT(*) FROM questions WHERE instructor_id = $1) as question_count,
-          (SELECT COUNT(*) FROM exams WHERE instructor_id = $1) as exam_count
-      `,
-        [instructorId]
-      );
-
-      res.status(200).json({
-        success: true,
-        data: contentSummary.rows[0],
-      });
-    } catch (error) {
-      res.status(500).json({
-        success: false,
-        message: 'Error fetching instructor content summary',
-        error: error.message,
-      });
     }
   },
 
@@ -562,17 +457,12 @@ const adminController = {
     try {
       await client.query('BEGIN');
 
-      
-      
-      
-
       // Check current assignments
       const currentAssignments = await client.query(
         `SELECT * FROM course_assignments
          WHERE course_id = $1 AND instructor_id = $2`,
         [courseId, instructorId]
       );
-      
 
       // Delete all assignments for this instructor-course pair
       const deleteResult = await client.query(
@@ -581,7 +471,6 @@ const adminController = {
          RETURNING *`,
         [courseId, instructorId]
       );
-      
 
       if (deleteResult.rows.length === 0) {
         await client.query('ROLLBACK');
@@ -592,7 +481,6 @@ const adminController = {
       }
 
       await client.query('COMMIT');
-      
 
       res.status(200).json({
         success: true,
