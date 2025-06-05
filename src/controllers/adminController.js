@@ -257,8 +257,8 @@ const adminController = {
         // Count active exams
         client.query(`
           SELECT COUNT(*) as active_exams
-          FROM exams
-          WHERE is_active = true AND end_date > NOW()
+          FROM exams e
+          WHERE e.start_date <= NOW() AND e.end_date >= NOW()
         `),
 
         // Count completed exams
