@@ -699,11 +699,11 @@ class InstructorController {
           .json({ error: 'End date must be after start date' });
       }
 
-      // Validate duration against time range
-      const timeDiffMinutes = (endDateTime - startDateTime) / (1000 * 60);
-      if (duration > timeDiffMinutes) {
+      // Validate duration is not more than 3 hours
+      const MAX_DURATION = 180; // 3 hours in minutes
+      if (duration > MAX_DURATION) {
         return res.status(400).json({
-          error: `Duration (${duration} minutes) exceeds available time (${Math.floor(timeDiffMinutes)} minutes)`,
+          error: `Duration cannot exceed ${MAX_DURATION} minutes (3 hours)`,
         });
       }
 
