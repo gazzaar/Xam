@@ -687,16 +687,18 @@ class InstructorController {
         return res.status(400).json({ error: 'Invalid date format' });
       }
 
-      if (startDateTime < now) {
+      // Compare with current time including hours and minutes
+      if (startDateTime.getTime() <= now.getTime()) {
         return res
           .status(400)
-          .json({ error: 'Start date cannot be in the past' });
+          .json({ error: 'Start date and time must be in the future' });
       }
 
-      if (endDateTime <= startDateTime) {
+      // Ensure end time is strictly after start time
+      if (endDateTime.getTime() <= startDateTime.getTime()) {
         return res
           .status(400)
-          .json({ error: 'End date must be after start date' });
+          .json({ error: 'End time must be after start time' });
       }
 
       // Validate duration is not more than 3 hours
