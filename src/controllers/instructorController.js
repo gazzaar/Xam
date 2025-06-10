@@ -1327,6 +1327,13 @@ class InstructorController {
           COUNT(DISTINCT se.student_id) as total_students,
           COALESCE(AVG(se.score), 0) as avg_score,
           (
+            SELECT COUNT(DISTINCT se2.student_id)
+            FROM student_exams se2
+            WHERE se2.exam_id = e.exam_id
+            AND se2.start_time >= $2
+            AND se2.start_time < $3
+          ) as students_today,
+          (
             SELECT json_build_object(
               'ranges', COALESCE(array_agg(grade_range), ARRAY[]::text[]),
               'counts', COALESCE(array_agg(count::integer), ARRAY[]::integer[])
@@ -1374,7 +1381,7 @@ class InstructorController {
         WHERE e.created_by = $1
         GROUP BY e.exam_id, e.exam_name
         ORDER BY e.created_at DESC`,
-        [user_id]
+        [user_id, today, tomorrow]
       );
 
       // Format response
@@ -1399,6 +1406,7 @@ class InstructorController {
           exam_name: exam.exam_name,
           total_students: parseInt(exam.total_students) || 0,
           average_score: parseFloat(exam.avg_score) || 0,
+          students_today: parseInt(exam.students_today) || 0,
           grade_distribution: exam.grade_distribution || {
             ranges: [],
             counts: [],
