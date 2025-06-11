@@ -1145,15 +1145,12 @@ class InstructorController {
       const { exam_id } = req.params;
       const user_id = req.user.userId;
 
-      // Verify instructor owns or has access to the exam
+      // First get the specific exam and verify permissions
       const examCheck = await pool.query(
-        `SELECT e.exam_id, e.exam_name
+        `SELECT e.exam_id, e.exam_name, e.created_by
          FROM exams e
-         JOIN courses c ON e.course_id = c.course_id
-         JOIN course_assignments ca ON c.course_id = ca.course_id
          WHERE e.exam_id = $1
-         AND (e.created_by = $2 OR ca.instructor_id = $2)
-         AND ca.is_active = true`,
+         AND e.created_by = $2`,
         [exam_id, user_id]
       );
 
@@ -1163,7 +1160,7 @@ class InstructorController {
         });
       }
 
-      // Get student grades for this exam
+      // Get student grades only for this specific exam
       const gradesResult = await pool.query(
         `SELECT
            als.student_id,
@@ -1171,8 +1168,9 @@ class InstructorController {
            als.student_email,
            se.score as grade
          FROM student_exams se
-         JOIN allowed_students als ON se.exam_id = als.exam_id AND se.student_id = als.student_id
+         JOIN allowed_students als ON se.student_id = als.student_id
          WHERE se.exam_id = $1
+         AND als.exam_id = $1
          AND se.status = 'completed'
          ORDER BY als.student_name`,
         [exam_id]

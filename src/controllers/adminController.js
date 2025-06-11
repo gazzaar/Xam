@@ -1061,6 +1061,58 @@ const adminController = {
       client.release();
     }
   },
+
+  // Reset instructor password
+  resetInstructorPassword: async (req, res) => {
+    const client = await pool.connect();
+    const { instructorId } = req.params;
+    const { newPassword } = req.body;
+
+    try {
+      await client.query('BEGIN');
+
+      // Check if instructor exists and is active
+      const instructorCheck = await client.query(
+        `SELECT user_id, is_active FROM users
+         WHERE user_id = $1 AND role = 'instructor'`,
+        [instructorId]
+      );
+
+      if (instructorCheck.rows.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({
+          success: false,
+          message: 'Instructor not found',
+        });
+      }
+
+      // Update password
+      await client.query(
+        `UPDATE users
+         SET password = $1
+         WHERE user_id = $2 AND role = 'instructor'
+         RETURNING user_id`,
+        [newPassword, instructorId]
+      );
+
+      await client.query('COMMIT');
+
+      res.status(200).json({
+        success: true,
+        message: 'Password reset successfully',
+      });
+    } catch (error) {
+      await client.query('ROLLBACK');
+      console.error('Error resetting instructor password:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Error resetting instructor password',
+        error: error.message,
+      });
+    } finally {
+      client.release();
+    }
+  },
 };
 
 module.exports = adminController;

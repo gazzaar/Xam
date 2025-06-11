@@ -57,6 +57,16 @@ router.delete(
   adminController.permanentlyDeleteInstructor
 );
 
+/**
+ * @route POST /admin/instructors/:instructorId/reset-password
+ * @desc Reset an instructor's password
+ * @access Private (Admin only)
+ */
+router.post(
+  '/instructors/:instructorId/reset-password',
+  adminController.resetInstructorPassword
+);
+
 // Course management
 router.post('/courses', adminController.createCourse);
 router.get('/courses', adminController.getAllCourses);

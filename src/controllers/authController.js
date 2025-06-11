@@ -116,4 +116,23 @@ const authController = {
   },
 };
 
+const validateUsername = (username) => {
+  // Must contain at least one letter, and can only contain letters, numbers, and underscores
+  const usernameRegex = /^(?=.*[a-zA-Z])[a-zA-Z0-9_]+$/;
+  if (!username || !usernameRegex.test(username)) {
+    return {
+      isValid: false,
+      message:
+        'Username must contain at least one letter and can only contain letters, numbers, and underscores',
+    };
+  }
+  if (username.length < 3 || username.length > 30) {
+    return {
+      isValid: false,
+      message: 'Username must be between 3 and 30 characters',
+    };
+  }
+  return { isValid: true };
+};
+
 module.exports = authController;
