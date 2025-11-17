@@ -541,7 +541,7 @@ $$ LANGUAGE plpgsql;
 
 async function main() {
   const client = new Client({
-    connectionString: process.env.DB.URL,
+    connectionString: process.env.DB_URL,
     ssl: { rejectUnauthorized: false }, // Required for Railway
   });
 

@@ -5,7 +5,7 @@ const pool = require('../db/pool');
 dotenv.config();
 
 const client = new Client({
-  connectionString: process.env.DB.URL,
+  connectionString: process.env.DB_URL,
   ssl: { rejectUnauthorized: false },
 });
 

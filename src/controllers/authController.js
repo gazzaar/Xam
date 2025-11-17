@@ -7,7 +7,7 @@ dotenv.config();
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
 
 const client = new Client({
-  connectionString: process.env.DB.URL,
+  connectionString: process.env.DB_URL,
   ssl: { rejectUnauthorized: false },
 });
 
