@@ -4,12 +4,11 @@ const dotenv = require('dotenv');
 
 dotenv.config();
 
-const dbUser = process.env.DB_USER;
-const dbPass = process.env.DB_PASS;
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key';
 
 const client = new Client({
-  connectionString: `postgresql://${dbUser}:${dbPass}@localhost:5432/xam`,
+  connectionString: process.env.DB.URL,
+  ssl: { rejectUnauthorized: false },
 });
 
 client.connect();

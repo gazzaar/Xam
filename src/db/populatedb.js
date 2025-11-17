@@ -2,8 +2,6 @@ const dotenv = require('dotenv');
 const { Client } = require('pg');
 
 dotenv.config();
-const dbUser = process.env.DB_USER;
-const dbPass = process.env.DB_PASS;
 
 // Function to create admin user
 async function createAdminUser(client) {
@@ -543,20 +541,17 @@ $$ LANGUAGE plpgsql;
 
 async function main() {
   const client = new Client({
-    host: 'localhost',
-    user: dbUser,
-    database: 'xam',
-    password: dbPass,
-    port: 5432,
+    connectionString: process.env.DB.URL,
+    ssl: { rejectUnauthorized: false }, // Required for Railway
   });
 
   try {
     await client.connect();
     console.log('Connected to database. Creating schema...');
+
     await client.query(SQL);
     console.log('Schema created successfully!');
 
-    // Create admin user
     await createAdminUser(client);
   } catch (err) {
     console.error('Error creating database schema:', err.stack);
