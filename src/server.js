@@ -17,7 +17,15 @@ dotenv.config();
 const app = express();
 
 // Middleware
-app.use(cors());
+app.use(
+  cors({
+    origin: [
+      'http://localhost:3001', // for local dev
+      'https://xam-app.netlify.app', // your Netlify frontend
+    ],
+    credentials: true,
+  })
+);
 app.use(morgan('dev')); // Logging
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
